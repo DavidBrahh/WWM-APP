@@ -83,24 +83,31 @@
       };
     }
 
+    function getQuestionHistory(room) {
+      return room.questionHistory || {};
+    }
+
+    function getUsedJokers(room) {
+      return room.usedJokers || {};
+    }
+
     function getDisabledOptionsFor5050(question) {
       const wrongLetters = ["A", "B", "C", "D"].filter(letter => letter !== question.answer);
       return wrongLetters.slice(0, 2);
     }
 
-    function getQuestionHistory(room) {
-      return room.questionHistory || {};
+    function clone(obj) {
+      return JSON.parse(JSON.stringify(obj || {}));
     }
 
-    function captureCurrentQuestionState(room) {
-      const qn = room.currentQuestion || 1;
+    function buildQuestionSnapshot(room) {
       return {
-        [qn]: {
-          answers: room.answers || {},
-          reveal: room.reveal || false,
-          joker: room.joker || { claimedBy: null, type: null },
-          spyState: room.spyState || { phase: "idle", spyPlayer: null, visibleAnswers: {} }
-        }
+        answers: clone(room.answers),
+        reveal: !!room.reveal,
+        joker: clone(room.joker),
+        spyState: clone(room.spyState),
+        scores: clone(room.scores),
+        usedJokers: clone(room.usedJokers)
       };
     }
 
@@ -126,10 +133,8 @@
           spyPlayer: null,
           visibleAnswers: {}
         },
-        roundMeta: {
-          revealedAt: null
-        },
-        questionHistory: {}
+        questionHistory: {},
+        usedJokers: {}
       };
 
       await set(ref(db, "rooms/" + roomCode), roomData);
@@ -177,6 +182,18 @@
         });
       }
 
+      const roomData = roomSnap.val();
+      const used = roomData.usedJokers || {};
+      if (!used[playerKey]) {
+        await update(ref(db, "rooms/" + roomCode + "/usedJokers"), {
+          [playerKey]: {
+            fifty: false,
+            risk: false,
+            spy: false
+          }
+        });
+      }
+
       state.roomCode = roomCode;
       state.playerKey = playerKey;
       state.isHost = false;
@@ -209,9 +226,10 @@
       }
 
       state.autoRevealLock = false;
+      const currentQ = room.currentQuestion || 1;
       const questionHistory = {
         ...getQuestionHistory(room),
-        ...captureCurrentQuestionState(room)
+        [currentQ]: buildQuestionSnapshot(room)
       };
 
       await update(ref(db, "rooms/" + state.roomCode), {
@@ -227,9 +245,6 @@
           spyPlayer: null,
           visibleAnswers: {}
         },
-        roundMeta: {
-          revealedAt: null
-        },
         questionHistory
       });
     }
@@ -239,17 +254,24 @@
       if (!snap.exists()) return;
 
       const room = snap.val();
-      const prev = (room.currentQuestion || 1) - 1;
+      const current = room.currentQuestion || 1;
+      const prev = current - 1;
       if (prev < 1) return;
 
       state.autoRevealLock = false;
       const history = getQuestionHistory(room);
-      const previousState = history[prev] || {
-        answers: {},
-        reveal: false,
-        joker: { claimedBy: null, type: null },
-        spyState: { phase: "idle", spyPlayer: null, visibleAnswers: {} }
-      };
+      const previousState = history[prev];
+
+      if (!previousState) {
+        await update(ref(db, "rooms/" + state.roomCode), {
+          currentQuestion: prev,
+          answers: {},
+          reveal: false,
+          joker: { claimedBy: null, type: null },
+          spyState: { phase: "idle", spyPlayer: null, visibleAnswers: {} }
+        });
+        return;
+      }
 
       await update(ref(db, "rooms/" + state.roomCode), {
         currentQuestion: prev,
@@ -257,9 +279,8 @@
         reveal: previousState.reveal || false,
         joker: previousState.joker || { claimedBy: null, type: null },
         spyState: previousState.spyState || { phase: "idle", spyPlayer: null, visibleAnswers: {} },
-        roundMeta: {
-          revealedAt: previousState.reveal ? Date.now() : null
-        }
+        scores: previousState.scores || {},
+        usedJokers: previousState.usedJokers || {}
       });
     }
 
@@ -269,11 +290,16 @@
 
       const room = snap.val();
       state.autoRevealLock = false;
+      const currentQ = room.currentQuestion || 1;
 
       const questionHistory = {
         ...getQuestionHistory(room),
-        ...captureCurrentQuestionState(room)
+        [currentQ]: buildQuestionSnapshot(room)
       };
+
+      const snapshotForCurrent = questionHistory[currentQ];
+      const restoredScores = snapshotForCurrent?.scores || room.scores || {};
+      const restoredUsedJokers = snapshotForCurrent?.usedJokers || room.usedJokers || {};
 
       await update(ref(db, "rooms/" + state.roomCode), {
         answers: {},
@@ -287,9 +313,8 @@
           spyPlayer: null,
           visibleAnswers: {}
         },
-        roundMeta: {
-          revealedAt: null
-        },
+        scores: restoredScores,
+        usedJokers: restoredUsedJokers,
         questionHistory
       });
     }
@@ -306,6 +331,15 @@
       const oldScores = room.scores || {};
       const newScores = { ...oldScores };
       const joker = getJokerState(room);
+      const usedJokers = clone(room.usedJokers || {});
+      const currentQ = room.currentQuestion || 1;
+      const history = {
+        ...getQuestionHistory(room)
+      };
+
+      if (!history[currentQ]) {
+        history[currentQ] = buildQuestionSnapshot(room);
+      }
 
       Object.keys(room.players || {}).forEach((playerKey) => {
         const playerAnswer = answers[playerKey];
@@ -321,12 +355,17 @@
         }
       });
 
+      if (joker.claimedBy && joker.type) {
+        const playerUsed = usedJokers[joker.claimedBy] || { fifty: false, risk: false, spy: false };
+        playerUsed[joker.type] = true;
+        usedJokers[joker.claimedBy] = playerUsed;
+      }
+
       await update(ref(db, "rooms/" + state.roomCode), {
         reveal: true,
         scores: newScores,
-        roundMeta: {
-          revealedAt: Date.now()
-        }
+        usedJokers,
+        questionHistory: history
       });
     }
 
@@ -368,6 +407,14 @@
       const joker = getJokerState(room);
       if (joker.claimedBy) {
         alert("Der Joker für diese Frage wurde schon von jemand anderem genommen.");
+        return;
+      }
+
+      const usedJokers = getUsedJokers(room);
+      const mine = usedJokers[state.playerKey] || { fifty: false, risk: false, spy: false };
+
+      if (mine[type]) {
+        alert("Diesen Joker hast du in diesem Spiel schon benutzt.");
         return;
       }
 
@@ -511,6 +558,8 @@
       const myScore = ((room.scores || {})[state.playerKey]) || 0;
       const joker = getJokerState(room);
       const spyState = getSpyState(room);
+      const usedJokers = getUsedJokers(room);
+      const myUsed = usedJokers[state.playerKey] || { fifty: false, risk: false, spy: false };
 
       const iAmJokerOwner = joker.claimedBy === state.playerKey;
       const iAmSpy = joker.type === "spy" && iAmJokerOwner;
@@ -555,9 +604,9 @@
       if (!joker.claimedBy) {
         jokerInfo = `
           <div class="joker-row">
-            <button onclick="useJoker('fifty')" ${!room.started || room.reveal ? "disabled" : ""}>50/50</button>
-            <button onclick="useJoker('risk')" ${!room.started || room.reveal ? "disabled" : ""}>Risk</button>
-            <button onclick="useJoker('spy')" ${!room.started || room.reveal ? "disabled" : ""}>Spy</button>
+            <button onclick="useJoker('fifty')" ${!room.started || room.reveal || myUsed.fifty ? "disabled" : ""}>50/50 ${myUsed.fifty ? "✓" : ""}</button>
+            <button onclick="useJoker('risk')" ${!room.started || room.reveal || myUsed.risk ? "disabled" : ""}>Risk ${myUsed.risk ? "✓" : ""}</button>
+            <button onclick="useJoker('spy')" ${!room.started || room.reveal || myUsed.spy ? "disabled" : ""}>Spy ${myUsed.spy ? "✓" : ""}</button>
           </div>
         `;
       } else if (iAmJokerOwner) {
@@ -585,6 +634,12 @@
       } else {
         jokerInfo = `<div class="joker-box blocked">Joker für diese Frage wurde schon von <strong>${getPlayerName(room, joker.claimedBy)}</strong> genommen.</div>`;
       }
+
+      jokerInfo += `
+        <div class="joker-box blocked" style="margin-top:10px;">
+          Deine Joker: 50/50 ${myUsed.fifty ? "✓ benutzt" : "• frei"} | Risk ${myUsed.risk ? "✓ benutzt" : "• frei"} | Spy ${myUsed.spy ? "✓ benutzt" : "• frei"}
+        </div>
+      `;
 
       document.getElementById("playerJokerArea").innerHTML = jokerInfo;
 
