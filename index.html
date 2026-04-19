@@ -24,16 +24,15 @@
       { id: 5, points: 3, question: "Welches Tier ist das größte an Land?", options: ["Löwe", "Elefant", "Giraffe", "Nashorn"], answer: "B" }
     ];
 
-    // HIER DEINE FIREBASE DATEN EINTRAGEN 
     const firebaseConfig = {
-  apiKey: "AIzaSyDOjv2w4vIgUdWd7_CjgUSoKq3b7aucHig",
-  authDomain: "wwm-app-dcd6a.firebaseapp.com",
-  databaseURL: "https://wwm-app-dcd6a-default-rtdb.europe-west1.firebasedatabase.app/",
-  projectId: "wwm-app-dcd6a",
-  storageBucket: "wwm-app-dcd6a.firebasestorage.app",
-  messagingSenderId: "327014748218",
-  appId: "1:327014748218:web:859f832b99f45119b5e503",
-  measurementId: "G-64ZSSMVYTG"
+      apiKey: "AIzaSyDojv2w4vIgUdw7_CjgUSoKq3b7aucHig",
+      authDomain: "wwm-app-dcd6a.firebaseapp.com",
+      databaseURL: "https://wwm-app-dcd6a-default-rtdb.europe-west1.firebasedatabase.app",
+      projectId: "wwm-app-dcd6a",
+      storageBucket: "wwm-app-dcd6a.firebasestorage.app",
+      messagingSenderId: "327014748218",
+      appId: "1:327014748218:web:859f832b99f45119b5e503",
+      measurementId: "G-64ZSSMVYTG"
     };
 
     const app = initializeApp(firebaseConfig);
@@ -43,7 +42,8 @@
       roomCode: null,
       playerKey: null,
       isHost: false,
-      roomData: null
+      roomData: null,
+      autoRevealLock: false
     };
 
     function randomCode() {
@@ -64,6 +64,37 @@
       return QUESTIONS[index] || QUESTIONS[0];
     }
 
+    function getPlayerName(room, playerKey) {
+      return room?.players?.[playerKey]?.name || playerKey;
+    }
+
+    function getSpyState(room) {
+      return room.spyState || {
+        phase: "idle", // idle, waiting_others, waiting_spy, done
+        spyPlayer: null,
+        visibleAnswers: {}
+      };
+    }
+
+    function getJokerState(room) {
+      return room.joker || {
+        claimedBy: null,
+        type: null
+      };
+    }
+
+    function getRoundMeta(room) {
+      return room.roundMeta || {
+        revealedAt: null
+      };
+    }
+
+    function getDisabledOptionsFor5050(question) {
+      const wrongLetters = ["A", "B", "C", "D"].filter(letter => letter !== question.answer);
+      // deterministic: disable first two wrong answers
+      return wrongLetters.slice(0, 2);
+    }
+
     async function createRoom() {
       const hostName = document.getElementById("hostName").value.trim() || "Host";
       const roomCode = randomCode();
@@ -77,13 +108,25 @@
         players: {},
         answers: {},
         scores: {},
-        joker: null
+        joker: {
+          claimedBy: null,
+          type: null
+        },
+        spyState: {
+          phase: "idle",
+          spyPlayer: null,
+          visibleAnswers: {}
+        },
+        roundMeta: {
+          revealedAt: null
+        }
       };
 
       await set(ref(db, "rooms/" + roomCode), roomData);
 
       state.roomCode = roomCode;
       state.isHost = true;
+      state.autoRevealLock = false;
 
       document.getElementById("hostRoomCode").innerText = roomCode;
       document.getElementById("hostJoinLink").value = `${window.location.origin}?room=${roomCode}`;
@@ -127,6 +170,7 @@
       state.roomCode = roomCode;
       state.playerKey = playerKey;
       state.isHost = false;
+      state.autoRevealLock = false;
 
       document.getElementById("playerRoomCode").innerText = roomCode;
       document.getElementById("playerDisplayName").innerText = playerName;
@@ -150,15 +194,28 @@
       const next = (room.currentQuestion || 1) + 1;
 
       if (next > QUESTIONS.length) {
-        alert("Keine weiteren Fragen mehr in dieser Testversion.");
+        alert("Keine weiteren Fragen mehr in dieser Version.");
         return;
       }
+
+      state.autoRevealLock = false;
 
       await update(ref(db, "rooms/" + state.roomCode), {
         currentQuestion: next,
         reveal: false,
         answers: {},
-        joker: null
+        joker: {
+          claimedBy: null,
+          type: null
+        },
+        spyState: {
+          phase: "idle",
+          spyPlayer: null,
+          visibleAnswers: {}
+        },
+        roundMeta: {
+          revealedAt: null
+        }
       });
     }
 
@@ -167,30 +224,149 @@
       if (!snap.exists()) return;
 
       const room = snap.val();
+      if (room.reveal) return;
+
       const q = getCurrentQuestion(room);
       const answers = room.answers || {};
       const oldScores = room.scores || {};
       const newScores = { ...oldScores };
+      const joker = getJokerState(room);
 
       Object.keys(room.players || {}).forEach((playerKey) => {
         const playerAnswer = answers[playerKey];
+        if (!playerAnswer) return;
+
+        const isRiskUser = joker.claimedBy === playerKey && joker.type === "risk";
+        const delta = isRiskUser ? q.points * 2 : q.points;
+
         if (playerAnswer === q.answer) {
-          newScores[playerKey] = (oldScores[playerKey] || 0) + q.points;
+          newScores[playerKey] = (oldScores[playerKey] || 0) + delta;
+        } else if (isRiskUser) {
+          newScores[playerKey] = (oldScores[playerKey] || 0) - delta;
         }
       });
 
       await update(ref(db, "rooms/" + state.roomCode), {
         reveal: true,
-        scores: newScores
+        scores: newScores,
+        roundMeta: {
+          revealedAt: Date.now()
+        }
       });
     }
 
     async function submitAnswer(letter) {
       if (!state.roomCode || !state.playerKey) return;
 
+      const snap = await get(ref(db, "rooms/" + state.roomCode));
+      if (!snap.exists()) return;
+
+      const room = snap.val();
+      if (!room.started || room.reveal) return;
+
+      const spyState = getSpyState(room);
+      const joker = getJokerState(room);
+
+      // If someone else has spy and is still waiting on others, spy user can't answer early
+      if (
+        joker.type === "spy" &&
+        joker.claimedBy === state.playerKey &&
+        spyState.phase === "waiting_others"
+      ) {
+        alert("Warte noch kurz, bis die anderen zuerst geantwortet haben.");
+        return;
+      }
+
       await update(ref(db, "rooms/" + state.roomCode + "/answers"), {
         [state.playerKey]: letter
       });
+    }
+
+    async function useJoker(type) {
+      if (!state.roomCode || !state.playerKey) return;
+
+      const snap = await get(ref(db, "rooms/" + state.roomCode));
+      if (!snap.exists()) return;
+
+      const room = snap.val();
+      if (!room.started || room.reveal) return;
+
+      const joker = getJokerState(room);
+      if (joker.claimedBy) {
+        alert("Der Joker für diese Frage wurde schon von jemand anderem genommen.");
+        return;
+      }
+
+      const updates = {
+        joker: {
+          claimedBy: state.playerKey,
+          type
+        }
+      };
+
+      if (type === "spy") {
+        updates.spyState = {
+          phase: "waiting_others",
+          spyPlayer: state.playerKey,
+          visibleAnswers: {}
+        };
+      }
+
+      await update(ref(db, "rooms/" + state.roomCode), updates);
+    }
+
+    async function maybeAutoReveal(room) {
+      if (!state.isHost) return;
+      if (!room.started || room.reveal) return;
+      if (state.autoRevealLock) return;
+
+      const players = Object.keys(room.players || {});
+      if (players.length === 0) return;
+
+      const answers = room.answers || {};
+      const joker = getJokerState(room);
+      const spyState = getSpyState(room);
+
+      // No spy active
+      if (joker.type !== "spy") {
+        const allAnswered = players.every(playerKey => !!answers[playerKey]);
+        if (allAnswered) {
+          state.autoRevealLock = true;
+          await revealAnswers();
+        }
+        return;
+      }
+
+      // Spy active
+      const spyPlayer = joker.claimedBy;
+      const otherPlayers = players.filter(p => p !== spyPlayer);
+
+      if (spyState.phase === "waiting_others") {
+        const othersDone = otherPlayers.every(playerKey => !!answers[playerKey]);
+        if (othersDone) {
+          const visibleAnswers = {};
+          otherPlayers.forEach(playerKey => {
+            visibleAnswers[playerKey] = answers[playerKey];
+          });
+
+          await update(ref(db, "rooms/" + state.roomCode), {
+            spyState: {
+              phase: "waiting_spy",
+              spyPlayer,
+              visibleAnswers
+            }
+          });
+        }
+        return;
+      }
+
+      if (spyState.phase === "waiting_spy") {
+        const spyAnswered = !!answers[spyPlayer];
+        if (spyAnswered) {
+          state.autoRevealLock = true;
+          await revealAnswers();
+        }
+      }
     }
 
     function copyJoinLink() {
@@ -201,14 +377,39 @@
       alert("Link kopiert.");
     }
 
+    function shareWhatsApp() {
+      const link = document.getElementById("hostJoinLink").value;
+      const text = `Komm in mein WWM-Spiel 😏🔥 ${link}`;
+      window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, "_blank");
+    }
+
     function renderHost(room) {
       const q = getCurrentQuestion(room);
       const players = room.players || {};
       const answers = room.answers || {};
       const scores = room.scores || {};
+      const joker = getJokerState(room);
+      const spyState = getSpyState(room);
+
+      const answeredCount = Object.keys(answers).filter(k => !!answers[k]).length;
+      const totalPlayers = Object.keys(players).length;
+
+      let jokerText = "Kein Joker aktiv";
+      if (joker.claimedBy) {
+        jokerText = `${getPlayerName(room, joker.claimedBy)} nutzt ${joker.type.toUpperCase()}`;
+      }
+
+      let spyText = "";
+      if (joker.type === "spy") {
+        if (spyState.phase === "waiting_others") {
+          spyText = " • Spy wartet auf die Antworten der anderen";
+        } else if (spyState.phase === "waiting_spy") {
+          spyText = " • Spy-Spieler darf jetzt antworten";
+        }
+      }
 
       document.getElementById("hostStatus").innerText =
-        `Frage ${room.currentQuestion} • ${room.started ? "Spiel läuft" : "Noch nicht gestartet"}${room.reveal ? " • Antwort aufgelöst" : ""}`;
+        `Frage ${room.currentQuestion} • ${room.started ? "Spiel läuft" : "Noch nicht gestartet"} • ${answeredCount}/${totalPlayers} Antworten • ${jokerText}${spyText}${room.reveal ? " • Antwort aufgelöst" : ""}`;
 
       document.getElementById("hostQuestionBox").innerHTML = `
         <div class="question-title">${q.question}</div>
@@ -236,45 +437,108 @@
       const q = getCurrentQuestion(room);
       const myAnswer = (room.answers || {})[state.playerKey];
       const myScore = ((room.scores || {})[state.playerKey]) || 0;
+      const joker = getJokerState(room);
+      const spyState = getSpyState(room);
+
+      const iAmJokerOwner = joker.claimedBy === state.playerKey;
+      const iAmSpy = joker.type === "spy" && iAmJokerOwner;
+      const iAmRisk = joker.type === "risk" && iAmJokerOwner;
+      const iAm5050 = joker.type === "fifty" && iAmJokerOwner;
 
       document.getElementById("playerStatus").innerText =
         `Frage ${room.currentQuestion} • ${room.started ? "Spiel läuft" : "Warte auf Host"}`;
 
       document.getElementById("playerScore").innerText = myScore;
 
+      const disabled5050 = getDisabledOptionsFor5050(q);
+
+      const buttonsHtml = q.options.map((opt, i) => {
+        const letter = ["A", "B", "C", "D"][i];
+        const selected = myAnswer === letter ? "selected" : "";
+        const correct = room.reveal && q.answer === letter ? "correct" : "";
+        const wrong = room.reveal && myAnswer === letter && q.answer !== letter ? "wrong" : "";
+
+        const hiddenBy5050 = iAm5050 && disabled5050.includes(letter);
+        const isSpyBlocked = iAmSpy && spyState.phase === "waiting_others";
+        const disabled = room.reveal || !room.started || hiddenBy5050 || isSpyBlocked;
+
+        return `
+          <button class="option button-option ${selected} ${correct} ${wrong} ${hiddenBy5050 ? "faded" : ""}"
+            onclick="submitAnswer('${letter}')"
+            ${disabled ? "disabled" : ""}>
+            <strong>${letter})</strong> ${opt}
+          </button>
+        `;
+      }).join("");
+
       document.getElementById("playerQuestionBox").innerHTML = `
         <div class="question-title">${q.question}</div>
         <div class="points">${q.points} Punkt(e)</div>
         <div class="options-grid">
-          ${q.options.map((opt, i) => {
-            const letter = ["A", "B", "C", "D"][i];
-            const selected = myAnswer === letter ? "selected" : "";
-            const correct = room.reveal && q.answer === letter ? "correct" : "";
-            const wrong = room.reveal && myAnswer === letter && q.answer !== letter ? "wrong" : "";
-            return `
-              <button class="option button-option ${selected} ${correct} ${wrong}" onclick="submitAnswer('${letter}')" ${room.reveal || !room.started ? "disabled" : ""}>
-                <strong>${letter})</strong> ${opt}
-              </button>
-            `;
-          }).join("")}
+          ${buttonsHtml}
         </div>
       `;
 
-      document.getElementById("playerReveal").innerHTML = room.reveal
-        ? `<div class="reveal-box">Richtige Antwort: <strong>${q.answer}</strong></div>`
-        : "";
+      let jokerInfo = "";
+      if (!joker.claimedBy) {
+        jokerInfo = `
+          <div class="joker-row">
+            <button onclick="useJoker('fifty')" ${!room.started || room.reveal ? "disabled" : ""}>50/50</button>
+            <button onclick="useJoker('risk')" ${!room.started || room.reveal ? "disabled" : ""}>Risk</button>
+            <button onclick="useJoker('spy')" ${!room.started || room.reveal ? "disabled" : ""}>Spy</button>
+          </div>
+        `;
+      } else if (iAmJokerOwner) {
+        if (iAm5050) jokerInfo = `<div class="joker-box info">Dein Joker: <strong>50/50</strong> aktiv</div>`;
+        if (iAmRisk) jokerInfo = `<div class="joker-box risk">Dein Joker: <strong>Risk</strong> aktiv — richtig = doppelt, falsch = doppelt Abzug</div>`;
+        if (iAmSpy) {
+          let spyAnswersHtml = "";
+          if (spyState.phase === "waiting_others") {
+            spyAnswersHtml = `<div class="joker-box spy">Spy aktiv — warte, bis die anderen geantwortet haben.</div>`;
+          } else if (spyState.phase === "waiting_spy") {
+            const visible = spyState.visibleAnswers || {};
+            const items = Object.keys(visible).map(playerKey => {
+              const name = getPlayerName(room, playerKey);
+              return `<li><strong>${name}</strong>: ${visible[playerKey]}</li>`;
+            }).join("");
+            spyAnswersHtml = `
+              <div class="joker-box spy">
+                Spy aktiv — jetzt siehst du die Antworten der anderen:
+                <ul>${items || "<li>Noch keine Antworten sichtbar</li>"}</ul>
+                Jetzt kannst du deine Antwort wählen.
+              </div>
+            `;
+          }
+          jokerInfo = spyAnswersHtml;
+        }
+      } else {
+        jokerInfo = `<div class="joker-box blocked">Joker für diese Frage wurde schon von <strong>${getPlayerName(room, joker.claimedBy)}</strong> genommen.</div>`;
+      }
+
+      document.getElementById("playerJokerArea").innerHTML = jokerInfo;
+
+      let revealHtml = "";
+      if (room.reveal) {
+        revealHtml = `<div class="reveal-box">Richtige Antwort: <strong>${q.answer}</strong></div>`;
+      }
+      document.getElementById("playerReveal").innerHTML = revealHtml;
     }
 
     function bindRoom(roomCode) {
-      onValue(ref(db, "rooms/" + roomCode), (snap) => {
+      onValue(ref(db, "rooms/" + roomCode), async (snap) => {
         if (!snap.exists()) return;
         const room = snap.val();
         state.roomData = room;
 
         if (state.isHost) {
           renderHost(room);
+          await maybeAutoReveal(room);
         } else {
           renderPlayer(room);
+        }
+
+        if (!room.reveal) {
+          state.autoRevealLock = false;
         }
       });
     }
@@ -286,6 +550,8 @@
     window.revealAnswers = revealAnswers;
     window.submitAnswer = submitAnswer;
     window.copyJoinLink = copyJoinLink;
+    window.shareWhatsApp = shareWhatsApp;
+    window.useJoker = useJoker;
 
     window.addEventListener("DOMContentLoaded", () => {
       const roomFromUrl = new URLSearchParams(window.location.search).get("room");
@@ -308,7 +574,7 @@
       border-radius: 18px;
       padding: 20px;
       margin: 20px auto;
-      max-width: 800px;
+      max-width: 900px;
       box-shadow: 0 10px 30px rgba(0,0,0,0.35);
     }
     h1, h2, h3, p {
@@ -363,14 +629,17 @@
     .button-option.wrong {
       background: #991b1b;
     }
-    .row {
+    .button-option.faded {
+      opacity: 0.25;
+    }
+    .row, .joker-row {
       display: flex;
       gap: 10px;
       flex-wrap: wrap;
     }
-    .row button {
+    .row button, .joker-row button {
       flex: 1;
-      min-width: 160px;
+      min-width: 140px;
     }
     ul {
       padding-left: 20px;
@@ -380,6 +649,28 @@
       padding: 14px;
       background: #0f766e;
       border-radius: 12px;
+    }
+    .joker-box {
+      margin-top: 14px;
+      padding: 14px;
+      border-radius: 12px;
+    }
+    .joker-box.info {
+      background: #1d4ed8;
+    }
+    .joker-box.risk {
+      background: #92400e;
+    }
+    .joker-box.spy {
+      background: #6d28d9;
+    }
+    .joker-box.blocked {
+      background: #475569;
+    }
+    @media (max-width: 700px) {
+      .options-grid {
+        grid-template-columns: 1fr;
+      }
     }
   </style>
 </head>
@@ -407,6 +698,7 @@
       <input id="hostJoinLink" readonly />
       <div class="row">
         <button onclick="copyJoinLink()">Link kopieren</button>
+        <button onclick="shareWhatsApp()">Per WhatsApp teilen</button>
         <button onclick="startGame()">Spiel starten</button>
         <button onclick="revealAnswers()">Antworten auflösen</button>
         <button onclick="nextQuestion()">Nächste Frage</button>
@@ -428,6 +720,7 @@
       <p><strong>Punkte:</strong> <span id="playerScore">0</span></p>
       <p id="playerStatus"></p>
 
+      <div id="playerJokerArea"></div>
       <div id="playerQuestionBox"></div>
       <div id="playerReveal"></div>
     </div>
