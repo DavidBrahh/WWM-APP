@@ -51,7 +51,7 @@
     }
 
     function safeName(name) {
-      return name.trim().replace(/[.#$\\[\\]]/g, "_");
+      return name.trim().replace(/[.#$\[\]]/g, "_");
     }
 
     function showScreen(id) {
@@ -70,7 +70,7 @@
 
     function getSpyState(room) {
       return room.spyState || {
-        phase: "idle", // idle, waiting_others, waiting_spy, done
+        phase: "idle",
         spyPlayer: null,
         visibleAnswers: {}
       };
@@ -83,16 +83,25 @@
       };
     }
 
-    function getRoundMeta(room) {
-      return room.roundMeta || {
-        revealedAt: null
-      };
-    }
-
     function getDisabledOptionsFor5050(question) {
       const wrongLetters = ["A", "B", "C", "D"].filter(letter => letter !== question.answer);
-      // deterministic: disable first two wrong answers
       return wrongLetters.slice(0, 2);
+    }
+
+    function getQuestionHistory(room) {
+      return room.questionHistory || {};
+    }
+
+    function captureCurrentQuestionState(room) {
+      const qn = room.currentQuestion || 1;
+      return {
+        [qn]: {
+          answers: room.answers || {},
+          reveal: room.reveal || false,
+          joker: room.joker || { claimedBy: null, type: null },
+          spyState: room.spyState || { phase: "idle", spyPlayer: null, visibleAnswers: {} }
+        }
+      };
     }
 
     async function createRoom() {
@@ -119,7 +128,8 @@
         },
         roundMeta: {
           revealedAt: null
-        }
+        },
+        questionHistory: {}
       };
 
       await set(ref(db, "rooms/" + roomCode), roomData);
@@ -199,6 +209,10 @@
       }
 
       state.autoRevealLock = false;
+      const questionHistory = {
+        ...getQuestionHistory(room),
+        ...captureCurrentQuestionState(room)
+      };
 
       await update(ref(db, "rooms/" + state.roomCode), {
         currentQuestion: next,
@@ -215,7 +229,68 @@
         },
         roundMeta: {
           revealedAt: null
+        },
+        questionHistory
+      });
+    }
+
+    async function previousQuestion() {
+      const snap = await get(ref(db, "rooms/" + state.roomCode));
+      if (!snap.exists()) return;
+
+      const room = snap.val();
+      const prev = (room.currentQuestion || 1) - 1;
+      if (prev < 1) return;
+
+      state.autoRevealLock = false;
+      const history = getQuestionHistory(room);
+      const previousState = history[prev] || {
+        answers: {},
+        reveal: false,
+        joker: { claimedBy: null, type: null },
+        spyState: { phase: "idle", spyPlayer: null, visibleAnswers: {} }
+      };
+
+      await update(ref(db, "rooms/" + state.roomCode), {
+        currentQuestion: prev,
+        answers: previousState.answers || {},
+        reveal: previousState.reveal || false,
+        joker: previousState.joker || { claimedBy: null, type: null },
+        spyState: previousState.spyState || { phase: "idle", spyPlayer: null, visibleAnswers: {} },
+        roundMeta: {
+          revealedAt: previousState.reveal ? Date.now() : null
         }
+      });
+    }
+
+    async function repeatCurrentQuestion() {
+      const snap = await get(ref(db, "rooms/" + state.roomCode));
+      if (!snap.exists()) return;
+
+      const room = snap.val();
+      state.autoRevealLock = false;
+
+      const questionHistory = {
+        ...getQuestionHistory(room),
+        ...captureCurrentQuestionState(room)
+      };
+
+      await update(ref(db, "rooms/" + state.roomCode), {
+        answers: {},
+        reveal: false,
+        joker: {
+          claimedBy: null,
+          type: null
+        },
+        spyState: {
+          phase: "idle",
+          spyPlayer: null,
+          visibleAnswers: {}
+        },
+        roundMeta: {
+          revealedAt: null
+        },
+        questionHistory
       });
     }
 
@@ -267,7 +342,6 @@
       const spyState = getSpyState(room);
       const joker = getJokerState(room);
 
-      // If someone else has spy and is still waiting on others, spy user can't answer early
       if (
         joker.type === "spy" &&
         joker.claimedBy === state.playerKey &&
@@ -327,7 +401,6 @@
       const joker = getJokerState(room);
       const spyState = getSpyState(room);
 
-      // No spy active
       if (joker.type !== "spy") {
         const allAnswered = players.every(playerKey => !!answers[playerKey]);
         if (allAnswered) {
@@ -337,7 +410,6 @@
         return;
       }
 
-      // Spy active
       const spyPlayer = joker.claimedBy;
       const otherPlayers = players.filter(p => p !== spyPlayer);
 
@@ -404,7 +476,7 @@
         if (spyState.phase === "waiting_others") {
           spyText = " • Spy wartet auf die Antworten der anderen";
         } else if (spyState.phase === "waiting_spy") {
-          spyText = " • Spy-Spieler darf jetzt antworten";
+          spyText = " • Spy-Spieler darf jetzt in Ruhe antworten";
         }
       }
 
@@ -503,9 +575,8 @@
             }).join("");
             spyAnswersHtml = `
               <div class="joker-box spy">
-                Spy aktiv — jetzt siehst du die Antworten der anderen:
+                Spy aktiv — jetzt siehst du die Antworten der anderen und kannst ohne Zeitdruck antworten:
                 <ul>${items || "<li>Noch keine Antworten sichtbar</li>"}</ul>
-                Jetzt kannst du deine Antwort wählen.
               </div>
             `;
           }
@@ -547,6 +618,8 @@
     window.joinRoom = joinRoom;
     window.startGame = startGame;
     window.nextQuestion = nextQuestion;
+    window.previousQuestion = previousQuestion;
+    window.repeatCurrentQuestion = repeatCurrentQuestion;
     window.revealAnswers = revealAnswers;
     window.submitAnswer = submitAnswer;
     window.copyJoinLink = copyJoinLink;
@@ -701,6 +774,8 @@
         <button onclick="shareWhatsApp()">Per WhatsApp teilen</button>
         <button onclick="startGame()">Spiel starten</button>
         <button onclick="revealAnswers()">Antworten auflösen</button>
+        <button onclick="previousQuestion()">Vorherige Frage</button>
+        <button onclick="repeatCurrentQuestion()">Frage wiederholen</button>
         <button onclick="nextQuestion()">Nächste Frage</button>
       </div>
 
