@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>WWM Multiplayer</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+</head>
+<body style="font-family:sans-serif;text-align:center;padding:20px;">
+
+<h1>WWM Multiplayer</h1>
+
+<button onclick="createRoom()">Host erstellen</button>
+
+<h3>Beitreten</h3>
+<input id="code" placeholder="Code"/>
+<input id="name" placeholder="Name"/>
+<button onclick="join()">Join</button>
+
+<script>
+let room = null;
+
+function createRoom(){
+  let code = Math.random().toString(36).substring(2,7).toUpperCase();
+  localStorage.setItem("room_"+code, JSON.stringify({
+    players:[],
+    question:1
+  }));
+  alert("Dein Code: "+code);
+}
+
+function join(){
+  let code = document.getElementById("code").value;
+  let name = document.getElementById("name").value;
+
+  let data = JSON.parse(localStorage.getItem("room_"+code));
+  if(!data){ alert("Raum nicht gefunden"); return; }
+
+  data.players.push(name);
+  localStorage.setItem("room_"+code, JSON.stringify(data));
+
+  alert("Du bist drin!");
+}
+</script>
+
+</body>
+</html>
