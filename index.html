@@ -1,45 +1,437 @@
 <!DOCTYPE html>
-<html>
+<html lang="de">
 <head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>WWM Multiplayer</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+    import {
+      getDatabase,
+      ref,
+      set,
+      get,
+      update,
+      onValue
+    } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js";
+
+    const QUESTIONS = [
+      { id: 1, points: 1, question: "Was ist die Hauptstadt von Deutschland?", options: ["München", "Berlin", "Köln", "Hamburg"], answer: "B" },
+      { id: 2, points: 1, question: "Wie viele Tage hat eine Woche?", options: ["5", "6", "7", "8"], answer: "C" },
+      { id: 3, points: 2, question: "Welche Farbe entsteht aus Blau + Gelb?", options: ["Grün", "Orange", "Lila", "Rot"], answer: "A" },
+      { id: 4, points: 2, question: "Wie viele Stunden hat ein Tag?", options: ["12", "18", "24", "30"], answer: "C" },
+      { id: 5, points: 3, question: "Welches Tier ist das größte an Land?", options: ["Löwe", "Elefant", "Giraffe", "Nashorn"], answer: "B" }
+    ];
+
+    // HIER DEINE FIREBASE DATEN EINTRAGEN 
+    const firebaseConfig = {
+  apiKey: "AIzaSyDOjv2w4vIgUdWd7_CjgUSoKq3b7aucHig",
+  authDomain: "wwm-app-dcd6a.firebaseapp.com",
+  databaseURL: "https://wwm-app-dcd6a-default-rtdb.europe-west1.firebasedatabase.app/",
+  projectId: "wwm-app-dcd6a",
+  storageBucket: "wwm-app-dcd6a.firebasestorage.app",
+  messagingSenderId: "327014748218",
+  appId: "1:327014748218:web:859f832b99f45119b5e503",
+  measurementId: "G-64ZSSMVYTG"
+    };
+
+    const app = initializeApp(firebaseConfig);
+    const db = getDatabase(app);
+
+    let state = {
+      roomCode: null,
+      playerKey: null,
+      isHost: false,
+      roomData: null
+    };
+
+    function randomCode() {
+      return Math.random().toString(36).substring(2, 7).toUpperCase();
+    }
+
+    function safeName(name) {
+      return name.trim().replace(/[.#$\\[\\]]/g, "_");
+    }
+
+    function showScreen(id) {
+      document.querySelectorAll(".screen").forEach(el => el.style.display = "none");
+      document.getElementById(id).style.display = "block";
+    }
+
+    function getCurrentQuestion(room) {
+      const index = Math.max(0, (room.currentQuestion || 1) - 1);
+      return QUESTIONS[index] || QUESTIONS[0];
+    }
+
+    async function createRoom() {
+      const hostName = document.getElementById("hostName").value.trim() || "Host";
+      const roomCode = randomCode();
+
+      const roomData = {
+        hostName,
+        createdAt: Date.now(),
+        started: false,
+        currentQuestion: 1,
+        reveal: false,
+        players: {},
+        answers: {},
+        scores: {},
+        joker: null
+      };
+
+      await set(ref(db, "rooms/" + roomCode), roomData);
+
+      state.roomCode = roomCode;
+      state.isHost = true;
+
+      document.getElementById("hostRoomCode").innerText = roomCode;
+      document.getElementById("hostJoinLink").value = `${window.location.origin}?room=${roomCode}`;
+
+      bindRoom(roomCode);
+      showScreen("hostScreen");
+    }
+
+    async function joinRoom() {
+      const codeFromUrl = new URLSearchParams(window.location.search).get("room");
+      const roomCode = (document.getElementById("joinCode").value || codeFromUrl || "").toUpperCase();
+      const playerName = document.getElementById("playerName").value.trim();
+
+      if (!roomCode || !playerName) {
+        alert("Bitte Raumcode und Namen eingeben.");
+        return;
+      }
+
+      const roomSnap = await get(ref(db, "rooms/" + roomCode));
+      if (!roomSnap.exists()) {
+        alert("Raum nicht gefunden.");
+        return;
+      }
+
+      const playerKey = safeName(playerName);
+
+      await update(ref(db, "rooms/" + roomCode + "/players"), {
+        [playerKey]: {
+          name: playerName,
+          joinedAt: Date.now()
+        }
+      });
+
+      const scoreSnap = await get(ref(db, "rooms/" + roomCode + "/scores/" + playerKey));
+      if (!scoreSnap.exists()) {
+        await update(ref(db, "rooms/" + roomCode + "/scores"), {
+          [playerKey]: 0
+        });
+      }
+
+      state.roomCode = roomCode;
+      state.playerKey = playerKey;
+      state.isHost = false;
+
+      document.getElementById("playerRoomCode").innerText = roomCode;
+      document.getElementById("playerDisplayName").innerText = playerName;
+
+      bindRoom(roomCode);
+      showScreen("playerScreen");
+    }
+
+    async function startGame() {
+      await update(ref(db, "rooms/" + state.roomCode), {
+        started: true,
+        reveal: false
+      });
+    }
+
+    async function nextQuestion() {
+      const snap = await get(ref(db, "rooms/" + state.roomCode));
+      if (!snap.exists()) return;
+
+      const room = snap.val();
+      const next = (room.currentQuestion || 1) + 1;
+
+      if (next > QUESTIONS.length) {
+        alert("Keine weiteren Fragen mehr in dieser Testversion.");
+        return;
+      }
+
+      await update(ref(db, "rooms/" + state.roomCode), {
+        currentQuestion: next,
+        reveal: false,
+        answers: {},
+        joker: null
+      });
+    }
+
+    async function revealAnswers() {
+      const snap = await get(ref(db, "rooms/" + state.roomCode));
+      if (!snap.exists()) return;
+
+      const room = snap.val();
+      const q = getCurrentQuestion(room);
+      const answers = room.answers || {};
+      const oldScores = room.scores || {};
+      const newScores = { ...oldScores };
+
+      Object.keys(room.players || {}).forEach((playerKey) => {
+        const playerAnswer = answers[playerKey];
+        if (playerAnswer === q.answer) {
+          newScores[playerKey] = (oldScores[playerKey] || 0) + q.points;
+        }
+      });
+
+      await update(ref(db, "rooms/" + state.roomCode), {
+        reveal: true,
+        scores: newScores
+      });
+    }
+
+    async function submitAnswer(letter) {
+      if (!state.roomCode || !state.playerKey) return;
+
+      await update(ref(db, "rooms/" + state.roomCode + "/answers"), {
+        [state.playerKey]: letter
+      });
+    }
+
+    function copyJoinLink() {
+      const input = document.getElementById("hostJoinLink");
+      input.select();
+      input.setSelectionRange(0, 99999);
+      navigator.clipboard.writeText(input.value);
+      alert("Link kopiert.");
+    }
+
+    function renderHost(room) {
+      const q = getCurrentQuestion(room);
+      const players = room.players || {};
+      const answers = room.answers || {};
+      const scores = room.scores || {};
+
+      document.getElementById("hostStatus").innerText =
+        `Frage ${room.currentQuestion} • ${room.started ? "Spiel läuft" : "Noch nicht gestartet"}${room.reveal ? " • Antwort aufgelöst" : ""}`;
+
+      document.getElementById("hostQuestionBox").innerHTML = `
+        <div class="question-title">${q.question}</div>
+        <div class="points">${q.points} Punkt(e)</div>
+        <div class="options-grid">
+          ${q.options.map((opt, i) => {
+            const letter = ["A", "B", "C", "D"][i];
+            const correct = room.reveal && q.answer === letter ? "correct" : "";
+            return `<div class="option ${correct}"><strong>${letter})</strong> ${opt}</div>`;
+          }).join("")}
+        </div>
+      `;
+
+      const playerList = Object.keys(players).map((key) => {
+        const player = players[key];
+        const answer = answers[key] ? `Antwort: ${answers[key]}` : "Noch keine Antwort";
+        const score = scores[key] || 0;
+        return `<li><strong>${player.name}</strong> — ${answer} — ${score} Punkte</li>`;
+      }).join("");
+
+      document.getElementById("hostPlayers").innerHTML = playerList || "<li>Noch keine Spieler</li>";
+    }
+
+    function renderPlayer(room) {
+      const q = getCurrentQuestion(room);
+      const myAnswer = (room.answers || {})[state.playerKey];
+      const myScore = ((room.scores || {})[state.playerKey]) || 0;
+
+      document.getElementById("playerStatus").innerText =
+        `Frage ${room.currentQuestion} • ${room.started ? "Spiel läuft" : "Warte auf Host"}`;
+
+      document.getElementById("playerScore").innerText = myScore;
+
+      document.getElementById("playerQuestionBox").innerHTML = `
+        <div class="question-title">${q.question}</div>
+        <div class="points">${q.points} Punkt(e)</div>
+        <div class="options-grid">
+          ${q.options.map((opt, i) => {
+            const letter = ["A", "B", "C", "D"][i];
+            const selected = myAnswer === letter ? "selected" : "";
+            const correct = room.reveal && q.answer === letter ? "correct" : "";
+            const wrong = room.reveal && myAnswer === letter && q.answer !== letter ? "wrong" : "";
+            return `
+              <button class="option button-option ${selected} ${correct} ${wrong}" onclick="submitAnswer('${letter}')" ${room.reveal || !room.started ? "disabled" : ""}>
+                <strong>${letter})</strong> ${opt}
+              </button>
+            `;
+          }).join("")}
+        </div>
+      `;
+
+      document.getElementById("playerReveal").innerHTML = room.reveal
+        ? `<div class="reveal-box">Richtige Antwort: <strong>${q.answer}</strong></div>`
+        : "";
+    }
+
+    function bindRoom(roomCode) {
+      onValue(ref(db, "rooms/" + roomCode), (snap) => {
+        if (!snap.exists()) return;
+        const room = snap.val();
+        state.roomData = room;
+
+        if (state.isHost) {
+          renderHost(room);
+        } else {
+          renderPlayer(room);
+        }
+      });
+    }
+
+    window.createRoom = createRoom;
+    window.joinRoom = joinRoom;
+    window.startGame = startGame;
+    window.nextQuestion = nextQuestion;
+    window.revealAnswers = revealAnswers;
+    window.submitAnswer = submitAnswer;
+    window.copyJoinLink = copyJoinLink;
+
+    window.addEventListener("DOMContentLoaded", () => {
+      const roomFromUrl = new URLSearchParams(window.location.search).get("room");
+      if (roomFromUrl) {
+        document.getElementById("joinCode").value = roomFromUrl.toUpperCase();
+      }
+    });
+  </script>
+
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      background: linear-gradient(135deg, #0f172a, #111827);
+      color: white;
+      margin: 0;
+      padding: 20px;
+    }
+    .card {
+      background: #1e293b;
+      border-radius: 18px;
+      padding: 20px;
+      margin: 20px auto;
+      max-width: 800px;
+      box-shadow: 0 10px 30px rgba(0,0,0,0.35);
+    }
+    h1, h2, h3, p {
+      margin-top: 0;
+    }
+    input, button {
+      padding: 12px;
+      border-radius: 10px;
+      border: none;
+      margin: 6px 0;
+      font-size: 16px;
+    }
+    input {
+      width: 100%;
+      box-sizing: border-box;
+    }
+    button {
+      cursor: pointer;
+      font-weight: bold;
+    }
+    .screen { display: none; }
+    .question-title {
+      font-size: 26px;
+      font-weight: bold;
+      margin-bottom: 10px;
+    }
+    .points {
+      opacity: 0.8;
+      margin-bottom: 16px;
+    }
+    .options-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+    }
+    .option {
+      background: #334155;
+      border-radius: 12px;
+      padding: 14px;
+    }
+    .button-option {
+      color: white;
+      text-align: left;
+    }
+    .button-option.selected {
+      outline: 2px solid #38bdf8;
+    }
+    .option.correct,
+    .button-option.correct {
+      background: #166534;
+    }
+    .button-option.wrong {
+      background: #991b1b;
+    }
+    .row {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    .row button {
+      flex: 1;
+      min-width: 160px;
+    }
+    ul {
+      padding-left: 20px;
+    }
+    .reveal-box {
+      margin-top: 16px;
+      padding: 14px;
+      background: #0f766e;
+      border-radius: 12px;
+    }
+  </style>
 </head>
-<body style="font-family:sans-serif;text-align:center;padding:20px;">
+<body>
 
-<h1>WWM Multiplayer</h1>
+  <div id="homeScreen" class="screen" style="display:block;">
+    <div class="card">
+      <h1>WWM Multiplayer</h1>
 
-<button onclick="createRoom()">Host erstellen</button>
+      <h2>Host erstellen</h2>
+      <input id="hostName" placeholder="Dein Name als Host" />
+      <button onclick="createRoom()">Raum erstellen</button>
 
-<h3>Beitreten</h3>
-<input id="code" placeholder="Code"/>
-<input id="name" placeholder="Name"/>
-<button onclick="join()">Join</button>
+      <h2>Beitreten</h2>
+      <input id="joinCode" placeholder="Raumcode" />
+      <input id="playerName" placeholder="Dein Name" />
+      <button onclick="joinRoom()">Beitreten</button>
+    </div>
+  </div>
 
-<script>
-let room = null;
+  <div id="hostScreen" class="screen">
+    <div class="card">
+      <h2>Host Dashboard</h2>
+      <p><strong>Raumcode:</strong> <span id="hostRoomCode"></span></p>
+      <input id="hostJoinLink" readonly />
+      <div class="row">
+        <button onclick="copyJoinLink()">Link kopieren</button>
+        <button onclick="startGame()">Spiel starten</button>
+        <button onclick="revealAnswers()">Antworten auflösen</button>
+        <button onclick="nextQuestion()">Nächste Frage</button>
+      </div>
 
-function createRoom(){
-  let code = Math.random().toString(36).substring(2,7).toUpperCase();
-  localStorage.setItem("room_"+code, JSON.stringify({
-    players:[],
-    question:1
-  }));
-  alert("Dein Code: "+code);
-}
+      <p id="hostStatus"></p>
+      <div id="hostQuestionBox"></div>
 
-function join(){
-  let code = document.getElementById("code").value;
-  let name = document.getElementById("name").value;
+      <h3>Spieler</h3>
+      <ul id="hostPlayers"></ul>
+    </div>
+  </div>
 
-  let data = JSON.parse(localStorage.getItem("room_"+code));
-  if(!data){ alert("Raum nicht gefunden"); return; }
+  <div id="playerScreen" class="screen">
+    <div class="card">
+      <h2>Spieleransicht</h2>
+      <p><strong>Raum:</strong> <span id="playerRoomCode"></span></p>
+      <p><strong>Name:</strong> <span id="playerDisplayName"></span></p>
+      <p><strong>Punkte:</strong> <span id="playerScore">0</span></p>
+      <p id="playerStatus"></p>
 
-  data.players.push(name);
-  localStorage.setItem("room_"+code, JSON.stringify(data));
-
-  alert("Du bist drin!");
-}
-</script>
+      <div id="playerQuestionBox"></div>
+      <div id="playerReveal"></div>
+    </div>
+  </div>
 
 </body>
 </html>
