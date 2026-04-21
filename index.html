@@ -16,14 +16,6 @@
       onValue
     } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-database.js";
 
-    const QUESTIONS = [
-      { id: 1, points: 1, question: "Was ist die Hauptstadt von Deutschland?", options: ["München", "Berlin", "Köln", "Hamburg"], answer: "B" },
-      { id: 2, points: 1, question: "Wie viele Tage hat eine Woche?", options: ["5", "6", "7", "8"], answer: "C" },
-      { id: 3, points: 2, question: "Welche Farbe entsteht aus Blau + Gelb?", options: ["Grün", "Orange", "Lila", "Rot"], answer: "A" },
-      { id: 4, points: 2, question: "Wie viele Stunden hat ein Tag?", options: ["12", "18", "24", "30"], answer: "C" },
-      { id: 5, points: 3, question: "Welches Tier ist das größte an Land?", options: ["Löwe", "Elefant", "Giraffe", "Nashorn"], answer: "B" }
-    ];
-
     const firebaseConfig = {
       apiKey: "AIzaSyDojv2w4vIgUdw7_CjgUSoKq3b7aucHig",
       authDomain: "wwm-app-dcd6a.firebaseapp.com",
@@ -38,6 +30,146 @@
     const app = initializeApp(firebaseConfig);
     const db = getDatabase(app);
 
+    // =========================
+    // FRAGENPOOL
+    // =========================
+    const QUESTION_POOL_BY_LEVEL = {
+      1: [
+        { question: "Wie viele Sekunden hat eine Minute?", options: ["30","60","90","120"], answer: "B", difficulty: 1 },
+        { question: "Welche Farbe hat ein Stoppschild?", options: ["Blau","Rot","Grün","Gelb"], answer: "B", difficulty: 1 },
+        { question: "Wie viele Tage hat eine Woche?", options: ["5","6","7","8"], answer: "C", difficulty: 1 },
+        { question: "Welches Tier sagt „Miau“?", options: ["Hund","Katze","Kuh","Schaf"], answer: "B", difficulty: 1 },
+        { question: "Wie viele Monate hat ein Jahr?", options: ["10","11","12","13"], answer: "C", difficulty: 1 }
+      ],
+      2: [
+        { question: "Wie viele Bundesländer hat Deutschland?", options: ["14","15","16","17"], answer: "C", difficulty: 2 },
+        { question: "Wie heißt die Hauptstadt von Spanien?", options: ["Barcelona","Madrid","Valencia","Sevilla"], answer: "B", difficulty: 2 },
+        { question: "Welche Währung hat Japan?", options: ["Yuan","Won","Yen","Dollar"], answer: "C", difficulty: 2 },
+        { question: "Wie viele Kontinente gibt es?", options: ["5","6","7","8"], answer: "C", difficulty: 2 },
+        { question: "Wer schrieb „Faust“?", options: ["Schiller","Goethe","Kafka","Lessing"], answer: "B", difficulty: 2 }
+      ],
+      3: [
+        { question: "Welches Organ pumpt Blut durch den Körper?", options: ["Lunge","Herz","Leber","Niere"], answer: "B", difficulty: 3 },
+        { question: "In welchem Jahr fiel die Berliner Mauer?", options: ["1987","1989","1991","1993"], answer: "B", difficulty: 3 },
+        { question: "Wie heißt die Hauptstadt von Kanada?", options: ["Toronto","Vancouver","Ottawa","Montreal"], answer: "C", difficulty: 3 },
+        { question: "Wie viele Spieler stehen beim Fußball pro Team auf dem Feld?", options: ["9","10","11","12"], answer: "C", difficulty: 3 },
+        { question: "Wer malte die Mona Lisa?", options: ["Van Gogh","Picasso","Da Vinci","Rembrandt"], answer: "C", difficulty: 3 }
+      ],
+      4: [
+        { question: "Welches Organ ist hauptsächlich für die Entgiftung im Körper zuständig?", options: ["Herz","Lunge","Leber","Milz"], answer: "C", difficulty: 4 },
+        { question: "Wie heißt die Hauptstadt von Norwegen?", options: ["Stockholm","Oslo","Helsinki","Kopenhagen"], answer: "B", difficulty: 4 },
+        { question: "Welcher Fluss fließt durch Paris?", options: ["Themse","Donau","Seine","Elbe"], answer: "C", difficulty: 4 },
+        { question: "Wie viele Sekunden hat ein Tag?", options: ["86400","43200","90000","100000"], answer: "A", difficulty: 4 },
+        { question: "Welches Land ist kein EU-Mitglied?", options: ["Polen","Schweiz","Spanien","Italien"], answer: "B", difficulty: 4 }
+      ],
+      5: [
+        { question: "Wie heißt die Hauptstadt von Finnland?", options: ["Oslo","Stockholm","Helsinki","Tallinn"], answer: "C", difficulty: 5 },
+        { question: "Welches Element hat das Symbol „Na“?", options: ["Natrium","Stickstoff","Neon","Nickel"], answer: "A", difficulty: 5 },
+        { question: "Wie viele Herzen hat ein Oktopus?", options: ["1","2","3","4"], answer: "C", difficulty: 5 },
+        { question: "Welches Tier kann nicht springen?", options: ["Elefant","Känguru","Frosch","Katze"], answer: "A", difficulty: 5 },
+        { question: "Wie viele Chromosomen hat ein Mensch?", options: ["42","44","46","48"], answer: "C", difficulty: 5 }
+      ],
+      6: [
+        { question: "Wie heißt die Hauptstadt von Neuseeland?", options: ["Auckland","Wellington","Sydney","Christchurch"], answer: "B", difficulty: 6 },
+        { question: "Welches Land hat die meisten Zeitzonen weltweit?", options: ["USA","Russland","Frankreich","China"], answer: "C", difficulty: 6 },
+        { question: "Welches Land hat keine Hauptstadt?", options: ["Schweiz","Australien","Kanada","Norwegen"], answer: "A", difficulty: 6 },
+        { question: "Wie heißt die größte Wüste der Welt?", options: ["Sahara","Gobi","Antarktis","Kalahari"], answer: "C", difficulty: 6 },
+        { question: "Wie viele Länder gibt es ungefähr weltweit?", options: ["150","180","195","220"], answer: "C", difficulty: 6 }
+      ],
+      7: [
+        { question: "Wer ist der erfolgreichste Torschütze in der Geschichte der Fußball-WM?", options: ["Messi","Ronaldo","Miroslav Klose","Pelé"], answer: "C", difficulty: 7 },
+        { question: "Welcher Schauspieler spielte Jack in Titanic?", options: ["Brad Pitt","Leonardo DiCaprio","Tom Cruise","Johnny Depp"], answer: "B", difficulty: 7 },
+        { question: "Welches Land gewann die Fußball-WM 2014?", options: ["Brasilien","Argentinien","Deutschland","Spanien"], answer: "C", difficulty: 7 },
+        { question: "Wie viele Ringe hat das olympische Symbol?", options: ["3","4","5","6"], answer: "C", difficulty: 7 },
+        { question: "Wer ist Gründer von Amazon?", options: ["Elon Musk","Jeff Bezos","Bill Gates","Steve Jobs"], answer: "B", difficulty: 7 }
+      ],
+      8: [
+        { question: "Welcher Tennisspieler hat die meisten Grand-Slam-Titel gewonnen?", options: ["Federer","Nadal","Djokovic","Sampras"], answer: "C", difficulty: 8 },
+        { question: "Welches Land hat die größte Insel der Welt?", options: ["Australien","Kanada","Dänemark","USA"], answer: "C", difficulty: 8 },
+        { question: "Wie heißt die Hauptstadt von Südafrika (politisch)?", options: ["Kapstadt","Pretoria","Johannesburg","Durban"], answer: "B", difficulty: 8 },
+        { question: "Welcher Film enthält die Figur „Darth Vader“?", options: ["Star Wars","Star Trek","Matrix","Avatar"], answer: "A", difficulty: 8 },
+        { question: "Welcher Fußballer gewann die meisten Ballon d’Or Titel?", options: ["Ronaldo","Messi","Zidane","Ronaldinho"], answer: "B", difficulty: 8 }
+      ],
+      9: [
+        { question: "Welches Land hat KEINE gemeinsame Grenze mit Deutschland?", options: ["Belgien","Luxemburg","Italien","Dänemark"], answer: "C", difficulty: 9 },
+        { question: "Welcher Schauspieler spielte den Joker in „The Dark Knight“?", options: ["Joaquin Phoenix","Heath Ledger","Jared Leto","Jack Nicholson"], answer: "B", difficulty: 9 },
+        { question: "Wie viele Herzen hat eine Qualle?", options: ["0","1","2","3"], answer: "A", difficulty: 9 },
+        { question: "Wer gewann die Fußball-WM 2006?", options: ["Deutschland","Brasilien","Italien","Frankreich"], answer: "C", difficulty: 9 },
+        { question: "Wer malte die „Sternennacht“?", options: ["Monet","Van Gogh","Picasso","Da Vinci"], answer: "B", difficulty: 9 }
+      ],
+      10: [
+        { question: "Welches Land hat die meisten UNESCO-Welterbestätten?", options: ["China","Italien","Frankreich","Deutschland"], answer: "B", difficulty: 10 },
+        { question: "Welches Tier hat drei Herzen?", options: ["Hai","Krake","Delfin","Wal"], answer: "B", difficulty: 10 },
+        { question: "Wer komponierte die „Mondscheinsonate“?", options: ["Mozart","Beethoven","Bach","Schubert"], answer: "B", difficulty: 10 },
+        { question: "Wie viele Tasten hat ein Standard-Klavier?", options: ["76","82","88","96"], answer: "C", difficulty: 10 },
+        { question: "Welcher Fußballverein gewann die Champions League 2020?", options: ["Real Madrid","Liverpool","Bayern München","PSG"], answer: "C", difficulty: 10 }
+      ],
+      11: [
+        { question: "Welches Land hat weltweit die meisten Vulkane?", options: ["Japan","Indonesien","USA","Chile"], answer: "B", difficulty: 11 },
+        { question: "Wer war der erste römische Kaiser?", options: ["Julius Caesar","Augustus","Nero","Caligula"], answer: "B", difficulty: 11 },
+        { question: "Wie heißt die Hauptstadt von Kasachstan (aktuell)?", options: ["Almaty","Astana","Taschkent","Baku"], answer: "B", difficulty: 11 },
+        { question: "Wie nennt man die Lehre von den Fahnen und Flaggen?", options: ["Heraldik","Vexillologie","Semiotik","Kartografie"], answer: "B", difficulty: 11 },
+        { question: "Welches heutige Land war früher als Abessinien bekannt?", options: ["Eritrea","Äthiopien","Somalia","Sudan"], answer: "B", difficulty: 11 }
+      ],
+      12: [
+        { question: "Welches Land hat die meisten aktiven Soldaten weltweit?", options: ["USA","China","Indien","Russland"], answer: "B", difficulty: 12 },
+        { question: "Wer war der jüngste Formel-1-Weltmeister der Geschichte?", options: ["Hamilton","Vettel","Alonso","Verstappen"], answer: "B", difficulty: 12 },
+        { question: "Welches Unternehmen war das erste mit über 1 Billion Dollar Marktwert?", options: ["Amazon","Apple","Microsoft","Google"], answer: "B", difficulty: 12 },
+        { question: "Welcher Berg ist der zweithöchste der Welt?", options: ["K2","Kangchenjunga","Lhotse","Makalu"], answer: "A", difficulty: 12 },
+        { question: "Welcher Film gewann 2021 den Oscar für den besten Film?", options: ["Nomadland","Tenet","1917","Joker"], answer: "A", difficulty: 12 }
+      ],
+      13: [
+        { question: "Welches Land hieß bis 1935 offiziell Persien?", options: ["Irak","Iran","Syrien","Afghanistan"], answer: "B", difficulty: 13 },
+        { question: "Wie nennt man die Wissenschaft von Wörtern und ihrer Herkunft?", options: ["Lexikografie","Etymologie","Philologie","Semantik"], answer: "B", difficulty: 13 },
+        { question: "Welches heutige Land war früher als Abessinien bekannt?", options: ["Eritrea","Äthiopien","Somalia","Sudan"], answer: "B", difficulty: 13 },
+        { question: "Welche Oper stammt von Wolfgang Amadeus Mozart?", options: ["Aida","Die Zauberflöte","Carmen","Nabucco"], answer: "B", difficulty: 13 },
+        { question: "Wer war der erste Mensch, der einen Nobelpreis zweimal in zwei verschiedenen Naturwissenschaften gewann?", options: ["Einstein","Curie","Pauling","Bohr"], answer: "B", difficulty: 13 }
+      ],
+      14: [
+        { question: "Welcher Staat ist flächenmäßig der kleinste Südamerikas?", options: ["Suriname","Uruguay","Guyana","Paraguay"], answer: "B", difficulty: 14 },
+        { question: "Welcher französische Herrscher wurde als 'Sonnenkönig' bezeichnet?", options: ["Ludwig XIV.","Napoleon","Karl X.","Ludwig XVI."], answer: "A", difficulty: 14 },
+        { question: "Wie heißt die Wissenschaft von Wörtern und ihrer Herkunft?", options: ["Lexikografie","Etymologie","Philologie","Semantik"], answer: "B", difficulty: 14 },
+        { question: "Wie hieß Istanbul vor 1930 im internationalen Postverkehr offiziell?", options: ["Byzanz","Konstantinopel","Anatolien","Smyrna"], answer: "B", difficulty: 14 },
+        { question: "Welche Vogelart legt ihre Eier in fremde Nester und überlässt die Aufzucht anderen?", options: ["Drossel","Kuckuck","Amsel","Star"], answer: "B", difficulty: 14 }
+      ],
+      15: [
+        { question: "Welche Stadt ist die höchstgelegene Hauptstadt Europas?", options: ["Andorra la Vella","Bern","Madrid","Vaduz"], answer: "A", difficulty: 15 },
+        { question: "Welcher Komponist schrieb den 'Boléro'?", options: ["Debussy","Ravel","Bizet","Satie"], answer: "B", difficulty: 15 },
+        { question: "Welches Land war das erste, das Frauen das Wahlrecht auf nationaler Ebene gab?", options: ["Finnland","Neuseeland","Norwegen","Island"], answer: "B", difficulty: 15 },
+        { question: "Welche europäische Hauptstadt liegt auf zwei Kontinenten?", options: ["Athen","Istanbul","Moskau","Baku"], answer: "B", difficulty: 15 },
+        { question: "Welches Land hat weltweit die meisten Zeitzonen, wenn Überseegebiete mitgezählt werden?", options: ["Russland","USA","Frankreich","Vereinigtes Königreich"], answer: "C", difficulty: 15 }
+      ]
+    };
+
+    function shuffle(arr) {
+      const a = [...arr];
+      for (let i = a.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [a[i], a[j]] = [a[j], a[i]];
+      }
+      return a;
+    }
+
+    function buildRandomGameQuestions() {
+      const selected = [];
+      for (let level = 1; level <= 15; level++) {
+        const pool = QUESTION_POOL_BY_LEVEL[level] || [];
+        if (pool.length < 2) {
+          throw new Error(`Zu wenig Fragen in Level ${level}. Mindestens 2 nötig.`);
+        }
+        const picked = shuffle(pool).slice(0, 2).map((q, idx) => ({
+          ...q,
+          id: (level - 1) * 2 + idx + 1
+        }));
+        selected.push(...picked);
+      }
+      return selected;
+    }
+
+    function letterList() {
+      return ["A", "B", "C", "D"];
+    }
+
     let state = {
       roomCode: null,
       playerKey: null,
@@ -51,7 +183,7 @@
     }
 
     function safeName(name) {
-      return name.trim().replace(/[.#$\[\]]/g, "_");
+      return name.trim().replace(/[.#$\\[\\]]/g, "_");
     }
 
     function showScreen(id) {
@@ -59,9 +191,14 @@
       document.getElementById(id).style.display = "block";
     }
 
+    function getQuestions(room) {
+      return room.questions || [];
+    }
+
     function getCurrentQuestion(room) {
+      const questions = getQuestions(room);
       const index = Math.max(0, (room.currentQuestion || 1) - 1);
-      return QUESTIONS[index] || QUESTIONS[0];
+      return questions[index] || null;
     }
 
     function getPlayerName(room, playerKey) {
@@ -92,7 +229,7 @@
     }
 
     function getDisabledOptionsFor5050(question) {
-      const wrongLetters = ["A", "B", "C", "D"].filter(letter => letter !== question.answer);
+      const wrongLetters = letterList().filter(letter => letter !== question.answer);
       return wrongLetters.slice(0, 2);
     }
 
@@ -114,6 +251,7 @@
     async function createRoom() {
       const hostName = document.getElementById("hostName").value.trim() || "Host";
       const roomCode = randomCode();
+      const questions = buildRandomGameQuestions();
 
       const roomData = {
         hostName,
@@ -121,6 +259,7 @@
         started: false,
         currentQuestion: 1,
         reveal: false,
+        questions,
         players: {},
         answers: {},
         scores: {},
@@ -218,10 +357,11 @@
       if (!snap.exists()) return;
 
       const room = snap.val();
+      const questions = getQuestions(room);
       const next = (room.currentQuestion || 1) + 1;
 
-      if (next > QUESTIONS.length) {
-        alert("Keine weiteren Fragen mehr in dieser Version.");
+      if (next > questions.length) {
+        alert("Keine weiteren Fragen mehr in dieser Lobby.");
         return;
       }
 
@@ -327,6 +467,8 @@
       if (room.reveal) return;
 
       const q = getCurrentQuestion(room);
+      if (!q) return;
+
       const answers = room.answers || {};
       const oldScores = room.scores || {};
       const newScores = { ...oldScores };
@@ -530,17 +672,21 @@
       document.getElementById("hostStatus").innerText =
         `Frage ${room.currentQuestion} • ${room.started ? "Spiel läuft" : "Noch nicht gestartet"} • ${answeredCount}/${totalPlayers} Antworten • ${jokerText}${spyText}${room.reveal ? " • Antwort aufgelöst" : ""}`;
 
-      document.getElementById("hostQuestionBox").innerHTML = `
-        <div class="question-title">${q.question}</div>
-        <div class="points">${q.points} Punkt(e)</div>
-        <div class="options-grid">
-          ${q.options.map((opt, i) => {
-            const letter = ["A", "B", "C", "D"][i];
-            const correct = room.reveal && q.answer === letter ? "correct" : "";
-            return `<div class="option ${correct}"><strong>${letter})</strong> ${opt}</div>`;
-          }).join("")}
-        </div>
-      `;
+      if (!q) {
+        document.getElementById("hostQuestionBox").innerHTML = "<div class='question-title'>Keine Frage verfügbar</div>";
+      } else {
+        document.getElementById("hostQuestionBox").innerHTML = `
+          <div class="question-title">${q.question}</div>
+          <div class="points">${q.points} Punkt(e) • Schwierigkeit ${q.difficulty}</div>
+          <div class="options-grid">
+            ${q.options.map((opt, i) => {
+              const letter = letterList()[i];
+              const correct = room.reveal && q.answer === letter ? "correct" : "";
+              return `<div class="option ${correct}"><strong>${letter})</strong> ${opt}</div>`;
+            }).join("")}
+          </div>
+        `;
+      }
 
       const playerList = Object.keys(players).map((key) => {
         const player = players[key];
@@ -571,10 +717,15 @@
 
       document.getElementById("playerScore").innerText = myScore;
 
+      if (!q) {
+        document.getElementById("playerQuestionBox").innerHTML = "<div class='question-title'>Keine Frage verfügbar</div>";
+        return;
+      }
+
       const disabled5050 = getDisabledOptionsFor5050(q);
 
       const buttonsHtml = q.options.map((opt, i) => {
-        const letter = ["A", "B", "C", "D"][i];
+        const letter = letterList()[i];
         const selected = myAnswer === letter ? "selected" : "";
         const correct = room.reveal && q.answer === letter ? "correct" : "";
         const wrong = room.reveal && myAnswer === letter && q.answer !== letter ? "wrong" : "";
@@ -594,7 +745,7 @@
 
       document.getElementById("playerQuestionBox").innerHTML = `
         <div class="question-title">${q.question}</div>
-        <div class="points">${q.points} Punkt(e)</div>
+        <div class="points">${q.points} Punkt(e) • Schwierigkeit ${q.difficulty}</div>
         <div class="options-grid">
           ${buttonsHtml}
         </div>
