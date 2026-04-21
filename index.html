@@ -224,6 +224,10 @@
       return room.questionHistory || {};
     }
 
+    function getRollbackSnapshots(room) {
+      return room.rollbackSnapshots || {};
+    }
+    
     function getUsedJokers(room) {
       return room.usedJokers || {};
     }
@@ -274,6 +278,8 @@
         },
         questionHistory: {},
         usedJokers: {}
+        rollbackSnapshots: {}
+        
       };
 
       await set(ref(db, "rooms/" + roomCode), roomData);
@@ -353,76 +359,64 @@
     }
 
     async function nextQuestion() {
-      const snap = await get(ref(db, "rooms/" + state.roomCode));
-      if (!snap.exists()) return;
+  const snap = await get(ref(db, "rooms/" + state.roomCode));
+  if (!snap.exists()) return;
 
-      const room = snap.val();
-      const questions = getQuestions(room);
-      const next = (room.currentQuestion || 1) + 1;
+  const room = snap.val();
+  const questions = getQuestions(room);
+  const next = (room.currentQuestion || 1) + 1;
 
-      if (next > questions.length) {
-        alert("Keine weiteren Fragen mehr in dieser Lobby.");
-        return;
-      }
+  if (next > questions.length) {
+    alert("Keine weiteren Fragen mehr in dieser Lobby.");
+    return;
+  }
 
-      state.autoRevealLock = false;
-      const currentQ = room.currentQuestion || 1;
-      const questionHistory = {
-        ...getQuestionHistory(room),
-        [currentQ]: buildQuestionSnapshot(room)
-      };
+  state.autoRevealLock = false;
 
-      await update(ref(db, "rooms/" + state.roomCode), {
-        currentQuestion: next,
-        reveal: false,
-        answers: {},
-        joker: {
-          claimedBy: null,
-          type: null
-        },
-        spyState: {
-          phase: "idle",
-          spyPlayer: null,
-          visibleAnswers: {}
-        },
-        questionHistory
-      });
+  await update(ref(db, "rooms/" + state.roomCode), {
+    currentQuestion: next,
+    reveal: false,
+    answers: {},
+    joker: {
+      claimedBy: null,
+      type: null
+    },
+    spyState: {
+      phase: "idle",
+      spyPlayer: null,
+      visibleAnswers: {}
     }
+  });
+  }
 
-    async function previousQuestion() {
-      const snap = await get(ref(db, "rooms/" + state.roomCode));
-      if (!snap.exists()) return;
+  async function previousQuestion() {
+  const snap = await get(ref(db, "rooms/" + state.roomCode));
+  if (!snap.exists()) return;
 
-      const room = snap.val();
-      const current = room.currentQuestion || 1;
-      const prev = current - 1;
-      if (prev < 1) return;
+  const room = snap.val();
+  const current = room.currentQuestion || 1;
+  const prev = current - 1;
 
-      state.autoRevealLock = false;
-      const history = getQuestionHistory(room);
-      const previousState = history[prev];
+  if (prev < 1) {
+    alert("Du bist schon bei der ersten Frage.");
+    return;
+  }
 
-      if (!previousState) {
-        await update(ref(db, "rooms/" + state.roomCode), {
-          currentQuestion: prev,
-          answers: {},
-          reveal: false,
-          joker: { claimedBy: null, type: null },
-          spyState: { phase: "idle", spyPlayer: null, visibleAnswers: {} }
-        });
-        return;
-      }
+  state.autoRevealLock = false;
 
-      await update(ref(db, "rooms/" + state.roomCode), {
-        currentQuestion: prev,
-        answers: previousState.answers || {},
-        reveal: previousState.reveal || false,
-        joker: previousState.joker || { claimedBy: null, type: null },
-        spyState: previousState.spyState || { phase: "idle", spyPlayer: null, visibleAnswers: {} },
-        scores: previousState.scores || {},
-        usedJokers: previousState.usedJokers || {}
-      });
-    }
+  const rollbackSnapshots = getRollbackSnapshots(room);
+  const rollback = rollbackSnapshots[prev];
+
+  await update(ref(db, "rooms/" + state.roomCode), {
+    currentQuestion: prev,
+    answers: {},
+    reveal: false,
+    joker: { claimedBy: null, type: null },
+    spyState: { phase: "idle", spyPlayer: null, visibleAnswers: {} },
+    scores: rollback?.scoresBeforeQuestion || room.scores || {},
+    usedJokers: rollback?.usedJokersBeforeQuestion || room.usedJokers || {}
+  });
+  }
 
     async function repeatCurrentQuestion() {
       const snap = await get(ref(db, "rooms/" + state.roomCode));
@@ -460,57 +454,61 @@
     }
 
     async function revealAnswers() {
-      const snap = await get(ref(db, "rooms/" + state.roomCode));
-      if (!snap.exists()) return;
+  const snap = await get(ref(db, "rooms/" + state.roomCode));
+  if (!snap.exists()) return;
 
-      const room = snap.val();
-      if (room.reveal) return;
+  const room = snap.val();
+  if (room.reveal) return;
 
-      const q = getCurrentQuestion(room);
-      if (!q) return;
+  const q = getCurrentQuestion(room);
+  if (!q) return;
 
-      const answers = room.answers || {};
-      const oldScores = room.scores || {};
-      const newScores = { ...oldScores };
-      const joker = getJokerState(room);
-      const usedJokers = clone(room.usedJokers || {});
-      const currentQ = room.currentQuestion || 1;
-      const history = {
-        ...getQuestionHistory(room)
-      };
+  const answers = room.answers || {};
+  const oldScores = room.scores || {};
+  const newScores = { ...oldScores };
+  const joker = getJokerState(room);
+  const usedJokers = clone(room.usedJokers || {});
+  const currentQ = room.currentQuestion || 1;
 
-      if (!history[currentQ]) {
-        history[currentQ] = buildQuestionSnapshot(room);
-      }
+  const rollbackSnapshots = {
+    ...getRollbackSnapshots(room)
+  };
 
-      Object.keys(room.players || {}).forEach((playerKey) => {
-        const playerAnswer = answers[playerKey];
-        if (!playerAnswer) return;
+  // Snapshot NUR einmal vor der Auswertung speichern
+  if (!rollbackSnapshots[currentQ]) {
+    rollbackSnapshots[currentQ] = {
+      scoresBeforeQuestion: clone(oldScores),
+      usedJokersBeforeQuestion: clone(usedJokers)
+    };
+  }
 
-        const isRiskUser = joker.claimedBy === playerKey && joker.type === "risk";
-        const delta = isRiskUser ? q.points * 2 : q.points;
+  Object.keys(room.players || {}).forEach((playerKey) => {
+    const playerAnswer = answers[playerKey];
+    if (!playerAnswer) return;
 
-        if (playerAnswer === q.answer) {
-          newScores[playerKey] = (oldScores[playerKey] || 0) + delta;
-        } else if (isRiskUser) {
-          newScores[playerKey] = (oldScores[playerKey] || 0) - delta;
-        }
-      });
+    const isRiskUser = joker.claimedBy === playerKey && joker.type === "risk";
+    const delta = isRiskUser ? q.points * 2 : q.points;
 
-      if (joker.claimedBy && joker.type) {
-        const playerUsed = usedJokers[joker.claimedBy] || { fifty: false, risk: false, spy: false };
-        playerUsed[joker.type] = true;
-        usedJokers[joker.claimedBy] = playerUsed;
-      }
-
-      await update(ref(db, "rooms/" + state.roomCode), {
-        reveal: true,
-        scores: newScores,
-        usedJokers,
-        questionHistory: history
-      });
+    if (playerAnswer === q.answer) {
+      newScores[playerKey] = (oldScores[playerKey] || 0) + delta;
+    } else if (isRiskUser) {
+      newScores[playerKey] = (oldScores[playerKey] || 0) - delta;
     }
+  });
 
+  if (joker.claimedBy && joker.type) {
+    const playerUsed = usedJokers[joker.claimedBy] || { fifty: false, risk: false, spy: false };
+    playerUsed[joker.type] = true;
+    usedJokers[joker.claimedBy] = playerUsed;
+  }
+
+  await update(ref(db, "rooms/" + state.roomCode), {
+    reveal: true,
+    scores: newScores,
+    usedJokers,
+    rollbackSnapshots
+  });
+}
     async function submitAnswer(letter) {
       if (!state.roomCode || !state.playerKey) return;
 
@@ -578,57 +576,59 @@
       await update(ref(db, "rooms/" + state.roomCode), updates);
     }
 
-    async function maybeAutoReveal(room) {
-      if (!state.isHost) return;
-      if (!room.started || room.reveal) return;
-      if (state.autoRevealLock) return;
+async function maybeAutoReveal(room) {
+  if (!state.isHost) return;
+  if (!room.started || room.reveal) return;
+  if (state.autoRevealLock) return;
 
-      const players = Object.keys(room.players || {});
-      if (players.length === 0) return;
+  const players = Object.keys(room.players || {});
+  if (players.length === 0) return;
 
-      const answers = room.answers || {};
-      const joker = getJokerState(room);
-      const spyState = getSpyState(room);
+  const answers = room.answers || {};
+  const joker = getJokerState(room);
+  const spyState = getSpyState(room);
 
-      if (joker.type !== "spy") {
-        const allAnswered = players.every(playerKey => !!answers[playerKey]);
-        if (allAnswered) {
-          state.autoRevealLock = true;
-          await revealAnswers();
-        }
-        return;
-      }
-
-      const spyPlayer = joker.claimedBy;
-      const otherPlayers = players.filter(p => p !== spyPlayer);
-
-      if (spyState.phase === "waiting_others") {
-        const othersDone = otherPlayers.every(playerKey => !!answers[playerKey]);
-        if (othersDone) {
-          const visibleAnswers = {};
-          otherPlayers.forEach(playerKey => {
-            visibleAnswers[playerKey] = answers[playerKey];
-          });
-
-          await update(ref(db, "rooms/" + state.roomCode), {
-            spyState: {
-              phase: "waiting_spy",
-              spyPlayer,
-              visibleAnswers
-            }
-          });
-        }
-        return;
-      }
-
-      if (spyState.phase === "waiting_spy") {
-        const spyAnswered = !!answers[spyPlayer];
-        if (spyAnswered) {
-          state.autoRevealLock = true;
-          await revealAnswers();
-        }
-      }
+  // Kein Spy aktiv
+  if (joker.type !== "spy") {
+    const allAnswered = players.every(playerKey => !!answers[playerKey]);
+    if (allAnswered) {
+      state.autoRevealLock = true;
+      await revealAnswers();
     }
+    return;
+  }
+
+  // Spy aktiv
+  const spyPlayer = joker.claimedBy;
+  const otherPlayers = players.filter(p => p !== spyPlayer);
+
+  if (spyState.phase === "waiting_others") {
+    const othersDone = otherPlayers.every(playerKey => !!answers[playerKey]);
+    if (othersDone) {
+      const visibleAnswers = {};
+      otherPlayers.forEach(playerKey => {
+        visibleAnswers[playerKey] = answers[playerKey];
+      });
+
+      await update(ref(db, "rooms/" + state.roomCode), {
+        spyState: {
+          phase: "waiting_spy",
+          spyPlayer,
+          visibleAnswers
+        }
+      });
+    }
+    return;
+  }
+
+  if (spyState.phase === "waiting_spy") {
+    const spyAnswered = !!answers[spyPlayer];
+    if (spyAnswered) {
+      state.autoRevealLock = true;
+      await revealAnswers();
+    }
+  }
+}
 
     function copyJoinLink() {
       const input = document.getElementById("hostJoinLink");
@@ -645,48 +645,65 @@
     }
 
     function renderHost(room) {
-      const q = getCurrentQuestion(room);
-      const players = room.players || {};
-      const answers = room.answers || {};
-      const scores = room.scores || {};
-      const joker = getJokerState(room);
-      const spyState = getSpyState(room);
+  const q = getCurrentQuestion(room);
+  const players = room.players || {};
+  const answers = room.answers || {};
+  const scores = room.scores || {};
+  const joker = getJokerState(room);
+  const spyState = getSpyState(room);
 
-      const answeredCount = Object.keys(answers).filter(k => !!answers[k]).length;
-      const totalPlayers = Object.keys(players).length;
+  const answeredCount = Object.keys(answers).filter(k => !!answers[k]).length;
+  const totalPlayers = Object.keys(players).length;
 
-      let jokerText = "Kein Joker aktiv";
-      if (joker.claimedBy) {
-        jokerText = `${getPlayerName(room, joker.claimedBy)} nutzt ${joker.type.toUpperCase()}`;
-      }
+  const preStart = document.getElementById("hostPreStartControls");
+  const gameControls = document.getElementById("hostGameControls");
+  if (preStart) preStart.style.display = room.started ? "none" : "flex";
+  if (gameControls) gameControls.style.display = room.started ? "flex" : "none";
 
-      let spyText = "";
-      if (joker.type === "spy") {
-        if (spyState.phase === "waiting_others") {
-          spyText = " • Spy wartet auf die Antworten der anderen";
-        } else if (spyState.phase === "waiting_spy") {
-          spyText = " • Spy-Spieler darf jetzt in Ruhe antworten";
-        }
-      }
+  let jokerText = "Kein Joker aktiv";
+  if (joker.claimedBy) {
+    jokerText = `${getPlayerName(room, joker.claimedBy)} nutzt ${joker.type.toUpperCase()}`;
+  }
 
-      document.getElementById("hostStatus").innerText =
-        `Frage ${room.currentQuestion} • ${room.started ? "Spiel läuft" : "Noch nicht gestartet"} • ${answeredCount}/${totalPlayers} Antworten • ${jokerText}${spyText}${room.reveal ? " • Antwort aufgelöst" : ""}`;
+  let spyText = "";
+  if (joker.type === "spy") {
+    if (spyState.phase === "waiting_others") {
+      spyText = " • Spy wartet auf die Antworten der anderen";
+    } else if (spyState.phase === "waiting_spy") {
+      spyText = " • Spy-Spieler darf jetzt in Ruhe antworten";
+    }
+  }
 
-      if (!q) {
-        document.getElementById("hostQuestionBox").innerHTML = "<div class='question-title'>Keine Frage verfügbar</div>";
-      } else {
-        document.getElementById("hostQuestionBox").innerHTML = `
-          <div class="question-title">${q.question}</div>
-          <div class="points">${q.points} Punkt(e) • Schwierigkeit ${q.difficulty}</div>
-          <div class="options-grid">
-            ${q.options.map((opt, i) => {
-              const letter = letterList()[i];
-              const correct = room.reveal && q.answer === letter ? "correct" : "";
-              return `<div class="option ${correct}"><strong>${letter})</strong> ${opt}</div>`;
-            }).join("")}
-          </div>
-        `;
-      }
+  document.getElementById("hostStatus").innerText =
+    `Frage ${room.currentQuestion} • ${room.started ? "Spiel läuft" : "Noch nicht gestartet"} • ${answeredCount}/${totalPlayers} Antworten • ${jokerText}${spyText}${room.reveal ? " • Antwort aufgelöst" : ""}`;
+
+  if (!q) {
+    document.getElementById("hostQuestionBox").innerHTML =
+      "<div class='question-title'>Keine Frage verfügbar</div>";
+  } else {
+    document.getElementById("hostQuestionBox").innerHTML = `
+      <div class="question-title">${q.question}</div>
+      <div class="points">${q.points} Punkt(e) • Schwierigkeit ${q.difficulty}</div>
+      <div class="options-grid">
+        ${q.options.map((opt, i) => {
+          const letter = letterList()[i];
+          const correct = room.reveal && q.answer === letter ? "correct" : "";
+          return `<div class="option ${correct}"><strong>${letter})</strong> ${opt}</div>`;
+        }).join("")}
+      </div>
+    `;
+  }
+
+  const playerList = Object.keys(players).map((key) => {
+    const player = players[key];
+    const answer = answers[key] ? `Antwort: ${answers[key]}` : "Noch keine Antwort";
+    const score = scores[key] || 0;
+    return `<li><strong>${player.name}</strong> — ${answer} — ${score} Punkte</li>`;
+  }).join("");
+
+  document.getElementById("hostPlayers").innerHTML =
+    playerList || "<li>Noch keine Spieler</li>";
+}
 
       const playerList = Object.keys(players).map((key) => {
         const player = players[key];
@@ -825,7 +842,6 @@
     window.startGame = startGame;
     window.nextQuestion = nextQuestion;
     window.previousQuestion = previousQuestion;
-    window.repeatCurrentQuestion = repeatCurrentQuestion;
     window.revealAnswers = revealAnswers;
     window.submitAnswer = submitAnswer;
     window.copyJoinLink = copyJoinLink;
@@ -976,14 +992,19 @@
       <p><strong>Raumcode:</strong> <span id="hostRoomCode"></span></p>
       <input id="hostJoinLink" readonly />
       <div class="row">
-        <button onclick="copyJoinLink()">Link kopieren</button>
-        <button onclick="shareWhatsApp()">Per WhatsApp teilen</button>
-        <button onclick="startGame()">Spiel starten</button>
-        <button onclick="revealAnswers()">Antworten auflösen</button>
-        <button onclick="previousQuestion()">Vorherige Frage</button>
-        <button onclick="repeatCurrentQuestion()">Frage wiederholen</button>
-        <button onclick="nextQuestion()">Nächste Frage</button>
-      </div>
+  <button onclick="copyJoinLink()">Link kopieren</button>
+  <button onclick="shareWhatsApp()">Per WhatsApp teilen</button>
+</div>
+
+<div id="hostPreStartControls" class="row">
+  <button onclick="startGame()">Spiel starten</button>
+</div>
+
+<div id="hostGameControls" class="row" style="display:none;">
+  <button onclick="previousQuestion()">Vorherige Frage</button>
+  <button onclick="revealAnswers()">Frage auflösen</button>
+  <button onclick="nextQuestion()">Nächste Frage</button>
+</div>
 
       <p id="hostStatus"></p>
       <div id="hostQuestionBox"></div>
