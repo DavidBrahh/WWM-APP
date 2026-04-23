@@ -174,6 +174,37 @@
       background: var(--blocked);
     }
 
+    .solution-box {
+      margin-top: 14px;
+      padding: 14px;
+      border-radius: 12px;
+      background: #7c2d12;
+    }
+
+    .end-box {
+      margin-top: 18px;
+      padding: 16px;
+      border-radius: 14px;
+      background: #0f172a;
+      border: 1px solid rgba(255, 255, 255, 0.12);
+    }
+
+    .scoreboard {
+      list-style: none;
+      padding: 0;
+      margin: 12px 0 0;
+    }
+
+    .scoreboard li {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 10px 12px;
+      margin: 8px 0;
+      border-radius: 10px;
+      background: rgba(255, 255, 255, 0.08);
+    }
+
     .muted {
       color: var(--muted);
     }
@@ -664,8 +695,49 @@
       playerKey: null,
       isHost: false,
       autoRevealForQuestion: null,
+      restartTriggeredRound: null,
       unsubscribeRoom: null
     };
+
+    function createEmptyUsedJokers(players) {
+      const usedJokers = {};
+      Object.keys(players || {}).forEach((playerKey) => {
+        usedJokers[playerKey] = { fifty: false, risk: false, spy: false };
+      });
+      return usedJokers;
+    }
+
+    function createZeroScores(players) {
+      const scores = {};
+      Object.keys(players || {}).forEach((playerKey) => {
+        scores[playerKey] = 0;
+      });
+      return scores;
+    }
+
+    function createRoundState(players, started = true) {
+      const scores = createZeroScores(players);
+      const usedJokers = createEmptyUsedJokers(players);
+      return {
+        started,
+        currentQuestion: 1,
+        reveal: false,
+        questions: buildRandomGameQuestions(),
+        answers: {},
+        scores,
+        joker: { claimedBy: null, type: null },
+        spyState: { phase: "idle", spyPlayer: null, visibleAnswers: {} },
+        usedJokers,
+        rollbackSnapshots: {
+          1: {
+            scoresBeforeQuestion: clone(scores),
+            usedJokersBeforeQuestion: clone(usedJokers)
+          }
+        },
+        gameFinished: false,
+        restartState: { phase: "idle", votes: {} }
+      };
+    }
 
     async function createRoom() {
       try {
@@ -676,22 +748,10 @@
         const roomData = {
           hostName,
           createdAt: Date.now(),
-          started: false,
-          currentQuestion: 1,
-          reveal: false,
+          ...createRoundState({}, false),
           questions,
           players: {},
-          answers: {},
-          scores: {},
-          joker: { claimedBy: null, type: null },
-          spyState: { phase: "idle", spyPlayer: null, visibleAnswers: {} },
-          usedJokers: {},
-          rollbackSnapshots: {
-            1: {
-              scoresBeforeQuestion: {},
-              usedJokersBeforeQuestion: {}
-            }
-          }
+          restartState: { phase: "idle", votes: {} }
         };
 
         await set(ref(db, `rooms/${roomCode}`), roomData);
@@ -700,6 +760,7 @@
         state.playerKey = null;
         state.isHost = true;
         state.autoRevealForQuestion = null;
+        state.restartTriggeredRound = null;
 
         document.getElementById("hostRoomCode").innerText = roomCode;
         document.getElementById("hostJoinLink").value = `${window.location.origin}${window.location.pathname}?room=${roomCode}`;
@@ -752,6 +813,7 @@
       state.playerKey = playerKey;
       state.isHost = false;
       state.autoRevealForQuestion = null;
+      state.restartTriggeredRound = null;
 
       document.getElementById("playerRoomCode").innerText = roomCode;
       document.getElementById("playerDisplayName").innerText = playerName;
@@ -763,10 +825,13 @@
     async function startGame() {
       if (!state.roomCode) return;
       state.autoRevealForQuestion = null;
+      state.restartTriggeredRound = null;
       await update(ref(db, `rooms/${state.roomCode}`), {
         started: true,
         reveal: false,
-        answers: {}
+        answers: {},
+        gameFinished: false,
+        restartState: { phase: "idle", votes: {} }
       });
     }
 
@@ -777,7 +842,6 @@
 
       const next = (room.currentQuestion || 1) + 1;
       if (next > getQuestions(room).length) {
-        alert("Keine weiteren Fragen mehr in dieser Lobby.");
         return;
       }
 
@@ -797,7 +861,8 @@
         answers: {},
         joker: { claimedBy: null, type: null },
         spyState: { phase: "idle", spyPlayer: null, visibleAnswers: {} },
-        rollbackSnapshots
+        rollbackSnapshots,
+        gameFinished: false
       });
     }
 
@@ -822,7 +887,9 @@
         joker: { claimedBy: null, type: null },
         spyState: { phase: "idle", spyPlayer: null, visibleAnswers: {} },
         scores: rollback?.scoresBeforeQuestion || {},
-        usedJokers: rollback?.usedJokersBeforeQuestion || {}
+        usedJokers: rollback?.usedJokersBeforeQuestion || {},
+        gameFinished: false,
+        restartState: { phase: "idle", votes: {} }
       });
     }
 
@@ -843,6 +910,7 @@
       const currentQuestionNumber = room.currentQuestion || 1;
       const rollbackSnapshots = { ...getRollbackSnapshots(room) };
       const points = getQuestionPoints(question, currentQuestionNumber);
+      const isLastQuestion = currentQuestionNumber >= getQuestions(room).length;
 
       if (!rollbackSnapshots[currentQuestionNumber]) {
         rollbackSnapshots[currentQuestionNumber] = {
@@ -877,8 +945,89 @@
         reveal: true,
         scores: newScores,
         usedJokers,
-        rollbackSnapshots
+        rollbackSnapshots,
+        gameFinished: isLastQuestion
       });
+    }
+
+    async function votePlayAgain() {
+      if (!state.roomCode || !state.playerKey) return;
+
+      const roomSnap = await get(ref(db, `rooms/${state.roomCode}`));
+      if (!roomSnap.exists()) return;
+      const room = roomSnap.val();
+
+      if (!room.gameFinished) return;
+
+      await update(ref(db, `rooms/${state.roomCode}/restartState/votes`), {
+        [state.playerKey]: true
+      });
+    }
+
+    async function maybeAutoRestart(room) {
+      if (!state.isHost || !room.gameFinished) return;
+
+      const restartState = room.restartState || { phase: "idle", votes: {} };
+      const players = Object.keys(room.players || {});
+      const voteCount = Object.keys(restartState.votes || {}).filter((playerKey) => restartState.votes[playerKey]).length;
+      const roundKey = `${room.createdAt || 0}-${room.currentQuestion || 1}-${voteCount}`;
+
+      if (restartState.phase !== "idle") return;
+      if (players.length === 0 || voteCount !== players.length) return;
+      if (state.restartTriggeredRound === roundKey) return;
+
+      state.restartTriggeredRound = roundKey;
+
+      await update(ref(db, `rooms/${state.roomCode}/restartState`), {
+        phase: "restarting",
+        votes: restartState.votes || {}
+      });
+
+      const freshRound = createRoundState(room.players || {}, true);
+
+      await update(ref(db, `rooms/${state.roomCode}`), {
+        ...freshRound
+      });
+    }
+
+    function getSortedScoreEntries(room) {
+      const players = room.players || {};
+      const scores = room.scores || {};
+      return Object.keys(players)
+        .map((playerKey) => ({
+          playerKey,
+          name: getPlayerName(room, playerKey),
+          score: scores[playerKey] || 0
+        }))
+        .sort((a, b) => b.score - a.score);
+    }
+
+    function buildEndScreenHtml(room, isHostView) {
+      const restartState = room.restartState || { votes: {} };
+      const scoreEntries = getSortedScoreEntries(room);
+      const totalPlayers = scoreEntries.length;
+      const voteCount = Object.keys(restartState.votes || {}).filter((playerKey) => restartState.votes[playerKey]).length;
+      const restartButton = isHostView
+        ? ""
+        : `<button onclick="votePlayAgain()" ${restartState.votes?.[state.playerKey] ? "disabled" : ""}>${restartState.votes?.[state.playerKey] ? "Play Again gewählt" : "Play Again"}</button>`;
+
+      return `
+        <div class="end-box">
+          <h3>Spiel beendet</h3>
+          <p>Endstand nach allen 30 Fragen:</p>
+          <ul class="scoreboard">
+            ${scoreEntries.map((entry, index) => `
+              <li>
+                <span>${index + 1}. ${entry.name}</span>
+                <strong>${entry.score} Punkte</strong>
+              </li>
+            `).join("")}
+          </ul>
+          <p style="margin-top:12px;">Play Again Stimmen: ${voteCount}/${totalPlayers}</p>
+          ${restartButton}
+          ${isHostView ? "<p class='muted' style='margin-top:12px;'>Die Lobby startet automatisch neu, sobald alle Spieler auf Play Again gedrückt haben.</p>" : ""}
+        </div>
+      `;
     }
 
     async function submitAnswer(letter) {
@@ -1027,6 +1176,7 @@
       const answeredCount = Object.keys(answers).filter((key) => !!answers[key]).length;
       const totalPlayers = Object.keys(players).length;
 
+      document.getElementById("hostLobbyMeta").style.display = room.started ? "none" : "block";
       document.getElementById("hostPreStartControls").style.display = room.started ? "none" : "flex";
       document.getElementById("hostGameControls").style.display = room.started ? "flex" : "none";
       document.getElementById("hostShareControls").style.display = room.started ? "none" : "flex";
@@ -1046,13 +1196,22 @@
       }
 
       document.getElementById("hostStatus").innerText =
-        `Frage ${room.currentQuestion} • ${room.started ? "Spiel läuft" : "Noch nicht gestartet"} • ${answeredCount}/${totalPlayers} Antworten • ${jokerText}${spyText}${room.reveal ? " • Antwort aufgelöst" : ""}`;
+        room.gameFinished
+          ? `Spiel beendet • ${totalPlayers} Spieler • Endstand bereit`
+          : `Frage ${room.currentQuestion} • ${room.started ? "Spiel läuft" : "Noch nicht gestartet"} • ${answeredCount}/${totalPlayers} Antworten • ${jokerText}${spyText}${room.reveal ? " • Antwort aufgelöst" : ""}`;
+
+      if (room.gameFinished) {
+        document.getElementById("hostGameControls").style.display = "none";
+        document.getElementById("hostQuestionBox").innerHTML = buildEndScreenHtml(room, true);
+        return;
+      }
 
       if (!question) {
         document.getElementById("hostQuestionBox").innerHTML =
           "<div class='question-title'>Keine Frage verfügbar</div>";
       } else {
         const points = getQuestionPoints(question, room.currentQuestion || 1);
+        const solutionText = `${question.answer}) ${question.options[letterList().indexOf(question.answer)]}`;
         document.getElementById("hostQuestionBox").innerHTML = `
           <div class="question-title">${question.question}</div>
           <div class="points">${points} Punkt(e) • Schwierigkeit ${question.difficulty}</div>
@@ -1063,6 +1222,7 @@
               return `<div class="option ${correct}"><strong>${letter})</strong> ${option}</div>`;
             }).join("")}
           </div>
+          <div class="solution-box"><strong>Host-Lösung:</strong> ${solutionText}</div>
           ${room.reveal ? `<div class="reveal-box">Richtige Antwort: <strong>${question.answer}) ${question.options[letterList().indexOf(question.answer)]}</strong></div>` : ""}
         `;
       }
@@ -1096,8 +1256,17 @@
       const iAm5050 = joker.type === "fifty" && iAmJokerOwner;
 
       document.getElementById("playerStatus").innerText =
-        `Frage ${room.currentQuestion} • ${room.started ? "Spiel läuft" : "Warte auf Host"}`;
+        room.gameFinished
+          ? "Spiel beendet"
+          : `Frage ${room.currentQuestion} • ${room.started ? "Spiel läuft" : "Warte auf Host"}`;
       document.getElementById("playerScore").innerText = myScore;
+
+      if (room.gameFinished) {
+        document.getElementById("playerJokerArea").innerHTML = "";
+        document.getElementById("playerQuestionBox").innerHTML = buildEndScreenHtml(room, false);
+        document.getElementById("playerReveal").innerHTML = "";
+        return;
+      }
 
       if (!question) {
         document.getElementById("playerQuestionBox").innerHTML =
@@ -1197,6 +1366,7 @@
         if (state.isHost) {
           renderHost(room);
           await maybeAutoReveal(room);
+          await maybeAutoRestart(room);
         } else {
           renderPlayer(room);
         }
@@ -1213,6 +1383,7 @@
     window.copyJoinLink = copyJoinLink;
     window.shareWhatsApp = shareWhatsApp;
     window.useJoker = useJoker;
+    window.votePlayAgain = votePlayAgain;
 
     window.addEventListener("DOMContentLoaded", () => {
       const roomFromUrl = new URLSearchParams(window.location.search).get("room");
@@ -1243,8 +1414,10 @@
   <div id="hostScreen" class="screen">
     <div class="card">
       <h2>Host Dashboard</h2>
-      <p><strong>Raumcode:</strong> <span id="hostRoomCode"></span></p>
-      <input id="hostJoinLink" readonly />
+      <div id="hostLobbyMeta">
+        <p><strong>Raumcode:</strong> <span id="hostRoomCode"></span></p>
+        <input id="hostJoinLink" readonly />
+      </div>
 
       <div id="hostShareControls" class="row">
         <button onclick="copyJoinLink()">Link kopieren</button>
