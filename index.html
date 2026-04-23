@@ -209,6 +209,10 @@
       color: var(--muted);
     }
 
+    .hidden {
+      display: none !important;
+    }
+
     @media (max-width: 700px) {
       .options-grid {
         grid-template-columns: 1fr;
@@ -1389,6 +1393,10 @@
       const roomFromUrl = new URLSearchParams(window.location.search).get("room");
       if (roomFromUrl) {
         document.getElementById("joinCode").value = roomFromUrl.toUpperCase();
+        document.getElementById("joinCode").readOnly = true;
+        document.getElementById("hostCreateSection").classList.add("hidden");
+        document.getElementById("joinSectionTitle").innerText = "Spiel beitreten";
+        document.getElementById("joinSectionHint").innerText = "Du bist über einen Einladungslink gekommen. Gib nur noch deinen Namen ein und tritt dem Raum bei.";
       }
       showScreen("homeScreen");
     });
@@ -1400,11 +1408,14 @@
       <h1>WWM Multiplayer</h1>
       <p class="muted">Host erstellt einen Raum, Spieler treten per Code oder Link bei, und die Punktevergabe bleibt sauber stabil.</p>
 
-      <h2>Host erstellen</h2>
-      <input id="hostName" placeholder="Dein Name als Host" />
-      <button onclick="createRoom()">Raum erstellen</button>
+      <div id="hostCreateSection">
+        <h2>Host erstellen</h2>
+        <input id="hostName" placeholder="Dein Name als Host" />
+        <button onclick="createRoom()">Raum erstellen</button>
+      </div>
 
-      <h2>Beitreten</h2>
+      <h2 id="joinSectionTitle">Beitreten</h2>
+      <p id="joinSectionHint" class="muted"></p>
       <input id="joinCode" placeholder="Raumcode" />
       <input id="playerName" placeholder="Dein Name" />
       <button onclick="joinRoom()">Beitreten</button>
